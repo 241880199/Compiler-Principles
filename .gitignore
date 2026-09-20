@@ -11,8 +11,13 @@ lex.yy.c
 syntax.tab.c
 syntax.tab.h
 syntax.output
+Test/unit/test_tree
+Test/unit/test_lexer
 
 # ── 编辑器 / 系统 ─────────────────────────────────────────────
 *~
 .vscode/
 .idea/
+
+# SDD 进度台账（临时工作文件）
+.superpowers/

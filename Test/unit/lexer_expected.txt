@@ -1,0 +1,36 @@
+TYPE: int
+ID: a
+ASSIGNOP
+INT: 83
+SEMI
+TYPE: int
+ID: b
+ASSIGNOP
+INT: 63
+SEMI
+TYPE: int
+ID: c
+ASSIGNOP
+Error type A at Line 3: Illegal octal number '09'.
+SEMI
+TYPE: int
+ID: d
+ASSIGNOP
+Error type A at Line 4: Illegal hexadecimal number '0x3G'.
+SEMI
+TYPE: float
+ID: e
+ASSIGNOP
+FLOAT: 0.000105
+SEMI
+TYPE: float
+ID: f
+ASSIGNOP
+Error type A at Line 6: Illegal floating point number "1.05e".
+SEMI
+TYPE: int
+ID: g
+ASSIGNOP
+Error type A at Line 9: Mysterious character "~".
+INT: 1
+SEMI

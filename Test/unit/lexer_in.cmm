@@ -1,0 +1,9 @@
+int a = 0123;
+int b = 0x3F;
+int c = 09;
+int d = 0x3G;
+float e = 1.05e-4;
+float f = 1.05e;
+/* multi
+   line */
+int g = ~1;
