@@ -39,6 +39,9 @@ Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c sr
 lexer-test: Test/unit/test_lexer
 	@bash -o pipefail -c './Test/unit/test_lexer < Test/unit/lexer_in.cmm | diff -u Test/unit/lexer_expected.txt -' && echo "PASS lexer"
 
-.PHONY: clean unit-test lexer-test
+test: parser
+	@bash scripts/run_tests.sh
+
+.PHONY: clean unit-test lexer-test test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output
