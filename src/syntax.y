@@ -14,6 +14,17 @@ Node *root = NULL;
 %token INT FLOAT ID SEMI COMMA ASSIGNOP RELOP PLUS MINUS STAR DIV AND OR DOT NOT
 %token TYPE LP RP LB RB LC RC STRUCT RETURN IF ELSE WHILE
 
+/* 优先级由低到高（Bison 中后声明者优先级高），依据附录 A 表 1。
+ * 注意 RELOP 不分级：附录 A 脚注 5 已把六个关系运算符统一到同一优先级，
+ * 且文法中本就是单一产生式 Exp : Exp RELOP Exp。 */
+%right ASSIGNOP
+%left  OR
+%left  AND
+%left  RELOP
+%left  PLUS MINUS
+%left  STAR DIV
+%right NOT UMINUS
+
 %start Program
 %%
 
@@ -125,7 +136,7 @@ Exp
   | Exp STAR Exp                { $$ = newNode("Exp", 3, $1, $2, $3); }
   | Exp DIV Exp                 { $$ = newNode("Exp", 3, $1, $2, $3); }
   | LP Exp RP                   { $$ = newNode("Exp", 3, $1, $2, $3); }
-  | MINUS Exp                   { $$ = newNode("Exp", 2, $1, $2); }
+  | MINUS Exp %prec UMINUS      { $$ = newNode("Exp", 2, $1, $2); }
   | NOT Exp                     { $$ = newNode("Exp", 2, $1, $2); }
   | ID LP Args RP               { $$ = newNode("Exp", 4, $1, $2, $3, $4); }
   | ID LP RP                    { $$ = newNode("Exp", 3, $1, $2, $3); }
