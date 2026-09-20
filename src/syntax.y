@@ -109,8 +109,11 @@ ParamDec
   : Specifier VarDec            { $$ = newNode("ParamDec", 2, $1, $2); }
   ;
 
+/* 错误恢复同步点之一（块层兜底）：`{` 之后出现无法归入 Def/Stmt 的内容时，
+   弹栈到此并在 `}` 处同步，避免一路吞到文件尾。 */
 CompSt
   : LC DefList StmtList RC      { $$ = newNode("CompSt", 4, $1, $2, $3, $4); }
+  | error RC                    { $$ = newNode("CompSt", 2, $1, $2); }
   ;
 
 StmtList
@@ -125,6 +128,9 @@ Stmt
   | IF LP Exp RP Stmt           { $$ = newNode("Stmt", 5, $1, $2, $3, $4, $5); }
   | IF LP Exp RP Stmt ELSE Stmt { $$ = newNode("Stmt", 7, $1, $2, $3, $4, $5, $6, $7); }
   | WHILE LP Exp RP Stmt        { $$ = newNode("Stmt", 5, $1, $2, $3, $4, $5); }
+/* 错误恢复同步点之二（语句层）：语句内部出错时弹到最近的 Stmt 出口，
+   丢弃出错的一段后在 `;` 同步，使同一函数体后续语句仍能被检查。 */
+  | error SEMI                  { $$ = newNode("Stmt", 2, $1, $2); }
   ;
 
 Exp
@@ -146,6 +152,14 @@ Exp
   | ID                          { $$ = newNode("Exp", 1, $1); }
   | INT                         { $$ = newNode("Exp", 1, $1); }
   | FLOAT                       { $$ = newNode("Exp", 1, $1); }
+/* 这里**不放** `| error RB` —— 实测（见 task-7-report.md）它会破坏下标内的恢复：
+   `Exp LB . Exp RB` 的闭包含 `Exp -> . error RB`，故 Bison 在下标内部就停下了弹栈，
+   把 `]` 当作 error 规则的同步符消耗掉，外层 `[` 反而永远等不到 `]`，
+   于是 `a[5,3] = 1.5;` 在行内多报一条错误（要求书 2.1.3 保证同一行不出多个错误）。
+   去掉它后，下标内的错误由 Stmt 层出口接管，丢弃整条语句后在 `;` 同步。
+   实测同样否决的写法：裸 `| error`（Exp 层再开一个出口，与 Stmt/CompSt 层重复，
+   且新增 1 处移进/归约冲突）、`Def : error SEMI`（新增 2 处冲突：DefList 可空，
+   看 `error` 时既要移进又要按 DefList→ε 归约）。冲突数必须保持 1。 */
   ;
 
 Args
@@ -155,6 +169,9 @@ Args
 
 %%
 
+/* 说明文字统一为 "Syntax error"：要求书 2.1.3 说明文字内容不限，只要错误类型与
+ * 行号正确；Bison 默认给的 msg 是 "syntax error"（小写 s），这里统一成规范写法。 */
 void yyerror(const char *msg) {
-    reportError('B', curTokenLine, msg);
+    (void)msg;
+    reportError('B', curTokenLine, "Syntax error");
 }
