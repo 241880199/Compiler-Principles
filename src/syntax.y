@@ -24,6 +24,7 @@ Node *root = NULL;
 %left  PLUS MINUS
 %left  STAR DIV
 %right NOT UMINUS
+%left  LB DOT
 
 %start Program
 %%
