@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 遍历 Test/ 下全部 .cmm，与同名 .exp 逐字节比对
+# 遍历 Test/sample 与 Test/err 下全部 .cmm，与同名 .exp 逐字节比对。
+# Test/unit/ 不在范围内（由 unit-test / lexer-test 目标各自负责）。
 set -u
 cd "$(dirname "$0")/.."
 
@@ -17,10 +18,21 @@ for cmm in Test/sample/*.cmm Test/err/*.cmm; do
     [ -e "$cmm" ] || continue
     exp="${cmm%.cmm}.exp"
     if [ ! -f "$exp" ]; then
-        echo "SKIP  $cmm  （无同名 .exp）"
+        echo "FAIL  $cmm  （缺同名 .exp）"
+        fail=$((fail + 1))
         continue
     fi
+
     ./parser "$cmm" > "$tmp" 2>&1
+    status=$?
+    # parser 恒返回 0（要求书未规定退出码），非 0 一定是异常。
+    # 段错误会留下空输出，不查状态码就会与"正确地什么都不打印"混淆。
+    if [ "$status" -ne 0 ]; then
+        echo "FAIL  $cmm  （parser 退出码 $status）"
+        fail=$((fail + 1))
+        continue
+    fi
+
     if diff -q "$exp" "$tmp" > /dev/null; then
         pass=$((pass + 1))
     else
@@ -34,21 +46,38 @@ done
 # 唯一允许的冲突是悬空 else（设计文档 §6.2.1 / §6.2.2）。
 # 这条断言不可省：实测有无 %left LB DOT 的 LR 动作表**完全相同**，
 # 所有 .exp 比对都察觉不到它被误删，只有这个计数能发现。
+# ── 至少跑了一个用例 ──────────────────────────────────────────
+# 否则 Test/ 被移动或清空时会打印 "通过 0 个，失败 0 个" 并退出 0。
+if [ "$pass" -eq 0 ]; then
+    echo "FAIL  没有任何用例通过（0 个）—— 检查 Test/ 目录是否被移动或清空"
+    fail=$((fail + 1))
+fi
+
+# ── 显式声明未纳入范围的 .cmm ─────────────────────────────────
+# Test/unit/ 下的 .cmm 由 unit-test / lexer-test 各自负责。显式列出，
+# 避免"漏掉某个目录"变成静默行为。
+other=$(find Test -name '*.cmm' -not -path 'Test/sample/*' -not -path 'Test/err/*' 2>/dev/null)
+if [ -n "$other" ]; then
+    echo "NOTE  以下 .cmm 不在本脚本范围内（由各自的单测目标负责）："
+    echo "$other" | sed 's/^/      /'
+fi
+
 if [ -f syntax.output ]; then
-    n=$(grep -c "conflicts:" syntax.output)
+    # 用锚定模式而非子串匹配：`grep -c "conflicts:"` 对
+    # "State N conflicts: 1 shift/reduce, 1 reduce/reduce" 也会放行。
+    # 锚定同时消除了本断言唯一依赖 bison 版本的地方
+    # （state 编号大小写用 [Ss] 兼容 3.0.4）。
+    n=$(grep -cE '^[Ss]tate [0-9]+ conflicts:' syntax.output)
     if [ "$n" -ne 1 ]; then
         echo "FAIL  期望恰好 1 个冲突 state（悬空 else），实测 $n 个"
-        grep -n "conflicts:" syntax.output | sed 's/^/      /'
+        grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
         fail=$((fail + 1))
-    elif ! grep -q "conflicts: 1 shift/reduce" syntax.output; then
+    elif ! grep -qE '^[Ss]tate [0-9]+ conflicts: 1 shift/reduce$' syntax.output; then
         echo "FAIL  唯一的冲突 state 不是「1 shift/reduce」"
-        grep -n "conflicts:" syntax.output | sed 's/^/      /'
+        grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
         fail=$((fail + 1))
     fi
 else
-    # 判 FAIL 而非 SKIP：脚本开头已确认 ./parser 存在，而 `test` 目标依赖 parser
-    # （其构建必经 bison -v），所以 syntax.output 本应存在。缺失说明构建链被绕过 ——
-    # 那正是这条断言最该警觉的情形，SKIP 等于在需要它的时候关掉它。
     echo "FAIL  未找到 syntax.output —— 冲突数断言无法执行"
     echo "      （它由 bison -v 生成。脚本开头已确认 ./parser 存在，而 test 目标依赖"
     echo "        parser，故该文件本应存在；缺失说明构建链被绕过）"
