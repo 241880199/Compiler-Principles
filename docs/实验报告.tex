@@ -1,0 +1,258 @@
+% 实验一实验报告 —— 用 XeLaTeX 编译（需 ctex 与中文字体）
+%   xelatex 实验报告.tex
+%   xelatex 实验报告.tex      （跑两遍以稳定页数与目录）
+%
+% 篇幅：控制在 3 页内；正文字号 11pt（中文约五号），满足要求书「最小不小于五号
+%       （英文 11 号字）」的规定。
+% 依据：要求书 2.1.5 要求报告 ≤3 页、重点写亮点、避免大段贴代码（全篇代码 3 处，
+%       每处 ≤5 行）。
+%
+% 本文件是「投稿版」；完整版证据记录见 docs/实验报告.md。
+
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.0cm,top=1.6cm,bottom=1.6cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=flexible,
+  breaklines=true,
+  frame=single,
+  framesep=2pt,
+  xleftmargin=3pt,
+  aboveskip=3pt,
+  belowskip=3pt,
+  keepspaces=true,
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\linespread{1.02}
+\renewcommand{\arraystretch}{1.05}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+{\large\bfseries 实验一：C{-}{-} 词法分析器与语法分析器}\\[2pt]
+张苏楠\quad 241880199
+\end{center}
+
+\vspace{-4pt}
+{\small
+\textbf{工具版本}（要求书 2.1.4 要求注明）：gcc \textbf{11.4.0}、GNU flex
+\textbf{2.6.4}、GNU bison \textbf{3.8.2}、GNU make \textbf{4.3}（Ubuntu 22.04）。
+文法另在\emph{评分环境}的 \textbf{bison 3.0.4} 上完整复跑：30 个用例全过、冲突
+state 数同为 3。全篇只使用两版通用的写法，未用 \code{\%union}。
+}
+
+\section*{一、实现的功能}
+
+{\small
+\begin{tabular}{@{}p{4.1cm}p{12.6cm}@{}}
+\toprule
+错误类型 A（词法） & 未定义字符、不符合词法单元定义的字符 \\
+错误类型 B（语法） & 单个文件内报告\emph{多处}错误 \\
+语法树先序打印 & 每层缩进 2 空格；$\varepsilon$ 结点不打印；含行号 \\
+选做 1.1 八/十六进制 & \code{0123}$\to$\code{INT: 83}、\code{0x3F}$\to$\code{INT: 63}；\code{09}、\code{0x3G} $\to$ \textbf{type A} \\
+选做 1.2 指数浮点 & \code{1.05e-4}$\to$\code{FLOAT: 0.000105}；\code{1.05e} $\to$ \textbf{type A} \\
+选做 1.3 注释 & \code{//} 与 \code{/*...*/} 滤除；未闭合 \code{/*} $\to$ \textbf{type A}，行号报在其所在行 \\
+\bottomrule
+\end{tabular}}
+
+\code{ID}/\code{TYPE}/\code{INT}/\code{FLOAT} 以「名称: 值」输出，\code{INT} 一律
+十进制。\textbf{选做三项全部实现}。另有 \textbf{30 个自动化用例}逐字节比对期望
+输出。\emph{测试通过本身不构成证据}——本报告每个结论都配有能证伪它的实验。
+
+\section*{二、如何编译}
+
+\begin{lstlisting}[language=bash]
+sudo apt-get install -y flex bison gcc make
+make clean && make          # 生成 ./parser（同时生成同内容的 ./cc）
+./parser <文件>              # 或 ./cc <文件>
+\end{lstlisting}
+
+程序自定义了 \code{main} 与 \code{yyerror}，故链接\textbf{不需要 \code{-ly}}。
+
+\section*{三、亮点 1：\code{YYSTYPE} 就是 \code{Node *}}
+
+传统写法用 \code{\%union} 为每类终结符声明不同的语义值类型，打印时不得不写「终结符
+走一条分支、非终结符走另一条」。本项目让词法单元由 lexer 侧直接构造 \code{Node *}
+交给 parser、语法单元在 action 里用 \code{newNode(...)} 组装，于是二者\textbf{同构}：
+
+\begin{lstlisting}[language=C]
+%define api.value.type {Node *}     /* 没有 %union */
+\end{lstlisting}
+
+收益有三：打印器面对\textbf{完全同质的树}，遍历代码只有一份；不必为每种终结符设计
+语义值类型；而\textbf{实验二要在结点上加符号表字段时，只改 \code{Node}，遍历代码
+一行不动}。一个不可省的细节：\code{Node} 里必须有显式的 \code{kind} 字段区分终结符
+与非终结符——\code{SEMI}、\code{LP} 这类终结符没有词素（\code{lexeme == NULL}，与
+$\varepsilon$ 结点相同），而 $\varepsilon$ 结点又是 \code{nchild == 0}（与终结符
+相同），\textbf{没有任何间接特征能可靠区分二者}，靠推测会静默出错。
+
+\section*{四、亮点 2：非法数字的检出}
+
+把「疑似非法」的模式写得比「合法」模式\textbf{更长}，用 Flex 的\textbf{最长匹配}
+抢到匹配权，再在 action 内校验——三类非法数于是全部在\emph{词法层}报 type A，且
+\textbf{不依赖规则的书写顺序}。
+
+先说清分类依据：\code{09} 既不匹配十进制整数（除 \code{0} 外首位不为 0）、也不
+匹配八进制（含 \code{9}）、也不匹配十六进制；\code{0x3G}、\code{1.05e} 同理。
+\textbf{它们不属于任何一个词法单元}，按要求书 2.1.1 第 1 条即为错误类型 A。要求书
+给出的 type B 备选答案，是在迁就一个\emph{未做校验}的简易词法分析器（\code{09} 被
+朴素切成 \code{0} 与 \code{9}，错误顺延到语法阶段才暴露），并非该错误的分类本身
+有歧义。
+
+{\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+输入 & 谁抢到匹配 & 长度对比 & 校验$\to$结果 \\
+\midrule
+\code{0123} & \code{0[0-9]+} & 4（合法 \code{0} 仅 1） & 全 $\le$7 $\to$ \code{INT: 83} \\
+\code{09} & \code{0[0-9]+} & 2（合法 \code{0} 仅 1） & 含 \code{9} $\to$ \textbf{type A} \\
+\code{0x3F} & \code{0[xX][0-9a-zA-Z\_]+} & 4 & 全为十六进制位 $\to$ \code{INT: 63} \\
+\code{0x3G} & 同上 & 4（合法规则只能匹配 \code{0x3}=3） & \code{G} 非法 $\to$ \textbf{type A} \\
+\code{1.05e-4} & 合法指数规则 & 7（另一条仅 5） & —— $\to$ \code{FLOAT: 0.000105} \\
+\code{1.05e} & 残缺指数规则 & 5（纯小数仅 4） & 后续非数字 $\to$ \textbf{type A} \\
+\bottomrule
+\end{tabular}}
+
+\textbf{最隐蔽的一个坑}：十六进制校验规则必须写成 \code{0[xX](字母|数字)+}，
+\emph{不能}写成 \code{0[xX]字母+}。因为「字母」的定义 \code{[\_a-zA-Z]} \textbf{不含
+数字}，写成后者时对 \code{0x3F} 只能匹配 3 个字符、比合法规则（4 个字符）\textbf{更短}，
+会被合法规则抢走匹配权——于是 \code{G} 这类非法字符\textbf{永远检测不到}，静默漏报，
+而检查项看上去是齐的。另一个反直觉的结论：残缺指数规则与合法指数规则的\textbf{先后
+顺序无关}（合法输入下合法规则必然更长，非法输入下合法规则根本不匹配）。
+
+\section*{五、亮点 3：\code{nodeLine()}——一个函数，两件事}
+
+语法单元的行号\textbf{不在任何 action 里赋值}，而是打印时由结构递归推导：
+
+\begin{lstlisting}[language=C]
+static int nodeLine(const Node *n) {        /* 子树中第一个词法单元的行号 */
+    if (n->kind == NODE_TOKEN) return n->line;     /* 0 表示不含词法单元 */
+    for (int i = 0; i < n->nchild; i++) { int l = nodeLine(n->child[i]);
+        if (l > 0) return l; }
+    return 0;
+}
+\end{lstlisting}
+
+词法单元的行号由 lexer 写入一次，是唯一可信来源；语法单元的行号是\textbf{结构的
+函数}，不是 action 的责任——这消除了「某个产生式忘了写行号」这\emph{一整类} bug。
+
+灵魂在于：要求书说「该单元产生了 $\varepsilon$ 则无需打印」。「产生
+$\varepsilon$」$\iff$ 推不出任何词素 $\iff$ \textbf{整棵子树不含词法单元} $\iff$
+\code{nodeLine} 返回 \code{0}。\textbf{二者是同一件事}，不需要第二个标志位。常见
+错法是用 \code{nchild == 0} 判 $\varepsilon$：\code{Program -> ExtDefList ->
+$\varepsilon$} 时 \code{Program} 有\emph{一个}子结点，会被误判为非
+$\varepsilon$，打印出一行无关的 \code{Program (0)}——而行号 \code{0} 本身就已经
+暴露了它其实是 $\varepsilon$。
+
+\section*{六、亮点 4：错误恢复的同步点，与三处被实测纠正的设计}
+
+要求书 2.1.3 要求报告\textbf{全部}错误，而 Bison 默认遇错即停，故须用 \code{error}
+产生式给出恢复出口。最终采用\textbf{四个}出口，其中三个带同步符、一个\textbf{不带}：
+\code{Stmt : error SEMI}（语句层）、\code{CompSt : error RC}（块层）、
+\code{ExtDef : error SEMI}（顶层，避免弹空栈中止）、\textbf{\code{Def : error}
+（定义层，裸符号）}。
+
+\subsection*{6.1 裸 \code{error} 与带同步符的差别（纯实测，非推演）}
+
+\code{error} 带同步符时，Bison 会先\textbf{丢弃}词法单元直到同步符出现才归约；而
+裸 \code{error} 移进后\textbf{立即归约、不丢弃任何前瞻}。四种写法的完整实测：
+
+{\small
+\begin{tabular}{@{}llp{4.1cm}p{4.1cm}@{}}
+\toprule
+写法 & 冲突 state & 场景(1) 块内定义缺分号、块继续 & 场景(2) 缺分号紧接 \code{\}}、后有兄弟 \\
+\midrule
+不加（改前） & 1 & \textbf{只报 1 条}（少报） & 报 2 条 \\
+\code{| error SEMI} & 3 & 报 2 条 & \textbf{只报 1 条}（少报） \\
+\code{| error RC} & 3 & \textbf{只报 1 条}（少报） & 报 2 条 \\
+\textbf{\code{| error}（裸）$\to$ 采纳} & \textbf{3} & \textbf{报 2 条} & \textbf{报 2 条} \\
+\bottomrule
+\end{tabular}}
+
+机理：场景(2) 整份文件\textbf{一个 \code{;} 都没有}，\code{error SEMI} 只能一路丢到
+EOF，于是只报第 1 条；\code{error RC} 则把 \code{\}} 本身当同步符吃掉，块内后续内容
+整段消失。裸 \code{error} 不丢任何东西，\code{\}} 仍在流里。\textbf{这是纯收益}：
+裸 \code{error} 引入的 2 个冲突与 \code{error SEMI} \emph{完全相同}——冲突由
+\code{error} 符号本身引起，与后面跟不跟同步符无关。
+
+\subsection*{6.2 被实测推翻的一步}
+
+原设计还有一条 \code{Exp : error RB}，推演看着很对：\code{a[5,3] = 1.5;} 在下标处
+出错时就地恢复、正好在 \code{]} 同步。\textbf{实测加入它反而报出 3 条错误}（行 5、
+行 5、行 6），直接违反要求书「同一行不出现多个错误」。用 \code{bison -t} 的调试轨迹
+查明：\code{Exp LB . Exp RB} 状态的\textbf{闭包里就含} \code{Exp -> . error RB}，
+所以 Bison 在下标\emph{内部}就找到出口、\textbf{停止弹栈}；而 \code{error} 的同步符
+\code{RB} \textbf{恰好就是外层 \code{[} 正在等待的那个 \code{]}}，被内层吃掉后外层
+永远等不到闭合。\textbf{教训}：设计 \code{error} 同步点，不能只看「error 之后想跟
+什么」，还要看\textbf{这个出口是否已在当前状态的闭包里}——在的话 Bison 就地停下，
+\emph{不会}按预期往外弹栈。
+
+\subsection*{6.3 一处如实说明}
+
+\code{CompSt : error RC} 的判别力已被裸 \code{Def : error} 吸收：实测删掉它后
+\textbf{冲突数不变、30 个用例仍全过}，另构造的 28 组差分输入 \textbf{0 组有差异}。
+本轮\textbf{不删}（它不花额外冲突代价），但也不声称它仍在起作用——它是\emph{无用例
+守护的保险}。
+
+\section*{七、亮点 5：冲突数哨兵}
+
+把「冲突数恰好 3」写成测试断言。这 3 处的归属（粘自 \code{syntax.output}，两版
+bison 一致）：\textbf{State 26 / State 31} 是同一件事——\code{DefList} 可空，于是
+「看 \code{error} 时移进」与「按 \code{DefList -> $\varepsilon$} 归约」不可兼得；
+\textbf{State 114} 是悬空 else（Bison 默认移进即 C 语义）。
+\code{StructSpecifier} 处\textbf{不冲突}：成员表后面只能跟 \code{RC}，\code{error}
+不进其前瞻集。
+
+它守的是一个\textbf{任何样例都守不住}的退化——把文法里唯一一行 \code{\%left LB DOT}
+删掉后：
+
+{\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+观察项 & 有该行 & 删掉后 \\
+\midrule
+冲突 state 数 & \textbf{3} & \textbf{13} \\
+LR 动作表（\code{yypact}/\code{yydefact}/\code{yytable}/\code{yycheck}/\code{yystos} 等） & —— & \textbf{逐字节完全相同} \\
+30 个用例的逐字节比对 & 全过 & \textbf{照样全过} \\
+\bottomrule
+\end{tabular}}
+
+即：删掉它之后\textbf{程序对外行为一模一样}。\textbf{除了冲突计数，没有任何测试能
+发现它被误删。}为何必须有这一行：栈上 \code{Exp PLUS Exp .} 遇前瞻 \code{LB} 时，
+归约得 \code{(a+b)[1]}、移进得 \code{a+(b[1])}，\textbf{两棵树都合法}；而 Bison 只在
+\textbf{规则与前瞻 token 都声明了优先级}时才消解（实测：不声明时这类冲突根本不进入
+判定，只声明其余运算符时 \code{Exp} 的 100 处冲突只能消掉 80 处）。
+
+\section*{八、已知限制（明知的取舍）}
+
+\textbf{限制一：同行 type B 抑制可能吞掉一条真实错误。} 实现里有一条「同一行上跟在
+本条 type A 之后报出的 type B 不打印」的抑制，理由是官方选做样例 2 / 4 的期望输出
+\emph{只含 type A 行、不含 type B}。判据是按「已报告过的行号」做的\textbf{近似，
+不是因果判断}，故会误伤：\code{int main() \{ int a = 1} 换行 \code{\~{} \}} 实测只报
+A，那条真实的缺分号错误被一起吞掉。边界：\textbf{符合要求书「同一行不出现多个错误」
+前提的输入下，本程序仍可能少报一条同行 type B}（判据是\emph{顺序相关}而非因果相关）。
+
+\textbf{限制二：语法错误的恢复不保证覆盖到文件末尾。} 顶层与块内的错误出口能继续
+分析，但另有一些出错点（如定义层错误其后既无 \code{;} 又无 \code{\}}）仍会中止分析、
+丢掉后续的\emph{语法}错误——词法错误已由 \code{main} 中的收尾扫描保证不丢。
+
+\textbf{其余}：不做语义分析、符号表、类型检查（属实验二）；不支持注释嵌套（C{-}{-} 明确
+不支持，嵌套时在第一个 \code{*/} 处闭合，其后残留的 \code{*/} 退化为 type B——这正是
+要求书样例的期望行为）；只接受单个输入文件名参数；递归深度未设上限。
+
+\textbf{一条值得单独记的教训}：未闭合注释在\emph{词法层}只报一条 type A，但端到端
+时若 \code{/*} 位于一个永远无法闭合的函数体内，语法分析器会\textbf{额外}报一条
+type B。这个差异最初没被发现，因为词法单测跑的是 \code{yylex()}、
+\textbf{根本不经过语法分析器}。\textbf{词法层测过的行为，不等于端到端的行为；单测
+覆盖了某个模块，不代表该模块在完整流水线里的表现已被覆盖。}
+
+\end{document}
