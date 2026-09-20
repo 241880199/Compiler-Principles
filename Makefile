@@ -32,6 +32,12 @@ Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h
 unit-test: Test/unit/test_tree
 	@bash -o pipefail -c './Test/unit/test_tree | diff -u Test/unit/tree_expected.txt -' && echo "PASS tree"
 
-.PHONY: clean unit-test
+Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c
+	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c -lfl
+
+lexer-test: Test/unit/test_lexer
+	@bash -o pipefail -c './Test/unit/test_lexer < Test/unit/lexer_in.cmm | diff -u Test/unit/lexer_expected.txt -' && echo "PASS lexer"
+
+.PHONY: clean unit-test lexer-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output
