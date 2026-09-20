@@ -38,10 +38,20 @@ ExtDefList
   | /* empty */                 { $$ = newNode("ExtDefList", 0); }
   ;
 
+/* 错误恢复同步点之三（顶层）：原本顶层没有出口，Bison 只能弹空栈并**中止**分析，
+   于是 `int a = 1;` 换行 `int b = 2` 这种输入只报出第一处（要求书 2.1.3 要求报出
+   全部错误）。写法与 `Stmt : error SEMI` 完全一致（含 newNode 元数约定）。
+
+   **实测（bison 3.8.2 与 3.0.4 两版）：冲突 state 数都仍是 1、内容都仍是那处悬空
+   else**，只有编号从 `State 111` 变成 `State 113` —— 那是多了一条产生式、多出两个
+   new state 造成的，**不是多了一个冲突**。所以这不是"修了就要加冲突"的取舍，
+   冲突数哨兵（scripts/run_tests.sh）不受影响。守护它的用例是
+   Test/err/toplevel_resync.cmm（删掉本产生式后立刻变红）。 */
 ExtDef
   : Specifier ExtDecList SEMI   { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | Specifier SEMI              { $$ = newNode("ExtDef", 2, $1, $2); }
   | Specifier FunDec CompSt     { $$ = newNode("ExtDef", 3, $1, $2, $3); }
+  | error SEMI                  { $$ = newNode("ExtDef", 2, $1, $2); }
   ;
 
 ExtDecList

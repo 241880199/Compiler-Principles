@@ -34,14 +34,25 @@ sudo apt-get update && sudo apt-get install -y flex bison gcc make
 |---|---|---|---|
 | gcc | **11.4.0**（Ubuntu 11.4.0-1ubuntu1~22.04.3） | 7.5.0 | 代码只用 C99 子集，两版均可编译 |
 | flex | **2.6.4** | 2.6.4 | 与评分环境完全一致 |
-| bison | **3.8.2** | 3.0.4 | 只使用两版通用的写法（见下） |
-| make | **4.3** | — | — |
+| bison | **3.8.2** | 3.0.4 | 只使用两版通用的写法（见下）；**并已在 3.0.4 实机复跑整套用例** |
+| make | **4.3** | 4.2（Ubuntu 20.04） | 见下方"不要用 `make -j`" |
 
 查看本机版本：
 
 ```bash
 gcc --version | head -1; flex --version; bison --version | head -1; make --version | head -1
 ```
+
+**关于评分环境的 bison 3.0.4：已实机验证，不是"无法实机验证"。** 从 Ubuntu bionic
+的归档取出 `bison_3.0.4.dfsg-1build1_amd64.deb`、用 `dpkg-deb -x` 解包（配合环境变量
+`BISON_PKGDATADIR` 指向解包出的 `usr/share/bison`）后，在仓库副本里重新生成
+`syntax.tab.c` 并跑完整套件，实测：
+
+| 检查项 | bison 3.8.2 | bison 3.0.4 |
+|---|---|---|
+| 编译警告 | 仅 1 处 shift/reduce 冲突 | 仅 1 处 shift/reduce 冲突 |
+| 冲突 state | `State 113 conflicts: 1 shift/reduce` | `State 113 conflicts: 1 shift/reduce` |
+| `make test` | **通过 29 个，失败 0 个** | **通过 29 个，失败 0 个** |
 
 **Bison 版本兼容**：为兼容评分环境的 Bison 3.0.4，文法中**不使用** `%define parse.error
 detailed`（3.0.4 无此值）等 3.1+ 新增写法；语义值用 `%define api.value.type {Node *}`
@@ -61,6 +72,11 @@ make            # 生成 ./parser（并复制一份 ./cc）
 ```bash
 make clean && make
 ```
+
+**不要用 `make -j`。** `syntax.tab.c syntax.tab.h: src/syntax.y` 是一条"一个 recipe、
+两个目标"的多目标规则，`make -j` 会把它当成两条独立规则**并发跑两次 bison**、两次写
+同一个 `syntax.tab.c`。可移植的分组写法（`&:`）需要 make ≥ 4.3，评分镜像是 Ubuntu
+20.04 的 make 4.2，因此不使用 `&:`，而是明确要求串行构建（本项目很小，耗时可忽略）。
 
 预期：**无编译错误、无 gcc 警告**；Bison 只报 1 处 shift/reduce 冲突，即悬空 else，
 属预期（见下）。若终端里没有 `syntax.output`，`make test` 的冲突数断言无法执行。
@@ -85,7 +101,8 @@ make clean && make
 make test       # 跑 Test/sample 与 Test/err 下全部用例，与同名 .exp 逐字节比对
 ```
 
-预期输出以 `通过 27 个，失败 0 个` 结尾。
+预期输出以 `通过 29 个，失败 0 个` 结尾（在 bison 3.8.2 与 3.0.4 下各复跑一次，
+两次都是 29/29）。
 
 `make test` 除比对用例之外还做三条断言，三条都不可省：
 
@@ -115,7 +132,8 @@ make lexer-test     # 词法分析器单独测试（Test/unit/test_lexer）
 ```
 Makefile        make → ./parser 与 ./cc
 src/            Flex 词法规则、Bison 文法、AST 定义与打印、入口、错误上报
-Test/sample/    要求书样例：NN.cmm 输入 + NN.exp 期望输出
+Test/sample/    要求书样例（NN.cmm + NN.exp 逐字手抄）；另有 floatbuf.cmm —— 非样例，
+                是守护 NUMBUF（大浮点值不被截断）的关键用例
 Test/err/       自建边界用例
 Test/unit/      单测（语法树 / 词法分析器）
 scripts/        环境安装、环境探测、测试执行脚本
