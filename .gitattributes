@@ -18,3 +18,12 @@ Makefile    text eol=lf
 *.pdf       binary
 *.png       binary
 *.jpg       binary
+
+# ── 行尾规范化例外（必须放在上面的 `*.cmm text eol=lf` 之后）─────────────
+# Test/err/crlf.cmm 这个用例的全部价值就在 \r 上：它验证空白规则 `[ \t\r]+` 能吃掉
+# CRLF，从而行号正确、且不把每个 \r 误报成 type A 未定义字符（见设计文档 §5.5.1）。
+# 上面的 `* text=auto eol=lf` 与 `*.cmm text eol=lf` 会在入索引时把 CRLF 规范化成
+# LF —— 实测 `git ls-files --eol` 显示 `i/lf w/crlf`，即索引里已是 LF。那样这个用例
+# 会和其它 LF 用例完全等价：测试照过，防线消失，且没有任何信号提示。
+# `-text` 关闭该文件的一切行尾处理，索引与工作区都保留原始 CRLF 字节。
+Test/err/crlf.cmm -text
