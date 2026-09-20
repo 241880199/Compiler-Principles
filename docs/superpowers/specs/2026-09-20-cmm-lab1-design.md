@@ -66,13 +66,14 @@ bionic 的归档里取出 `bison_3.0.4.dfsg-1build1_amd64.deb` 并解包（
 
 | 检查项 | bison 3.8.2 | bison 3.0.4 |
 |---|---|---|
-| 构建警告 | 1 处 shift/reduce 冲突，无其他警告 | 1 处 shift/reduce 冲突，无其他警告 |
-| 冲突 state | `State 113 conflicts: 1 shift/reduce` | `State 113 conflicts: 1 shift/reduce` |
-| `make test` | 通过 29 个，失败 0 个 | **通过 29 个，失败 0 个** |
-| 删掉 `ExtDef : error SEMI` 后的冲突 state | `State 111 ... 1 shift/reduce` | `State 111 ... 1 shift/reduce` |
+| 构建警告 | 3 处 shift/reduce 冲突，无其他警告 | 3 处 shift/reduce 冲突，无其他警告 |
+| 冲突 state | `State 26 / 31 / 114`，各 `1 shift/reduce` | `State 26 / 31 / 114`，各 `1 shift/reduce` |
+| `bash scripts/run_tests.sh` | 通过 30 个，失败 0 个 | **通过 30 个，失败 0 个** |
+| 删掉 `Def : error` 后的冲突 state | `State 113`（退回 1 个） | `State 113`（退回 1 个） |
+| 删掉 `ExtDef : error SEMI` 后的冲突 state | `State 24 / 29 / 112`（仍是 3 个） | `State 24 / 29 / 112`（仍是 3 个） |
 
-（冲突 state 的编号在两版之间**完全一致**，连 111/113 的差别也一样 —— 它只取决于
-文法，与 Bison 版本无关。）
+（冲突 state 的编号在两版之间**完全一致** —— 它只取决于文法，与 Bison 版本无关。
+冲突数由 1 变 3 是采纳 `Def : error` 的结果，见 §6.3。）
 
 **Bison 版本兼容约束**：`%define api.value.type {Node *}`、`%prec`、`%left/%right`、
 `%option` 等写法在 3.0.4 与 3.8.2 下均可用；**不使用** `%define parse.error detailed`
@@ -469,6 +470,14 @@ State 13
 else 一处**。**凡出现上述两处"看似该冲突"的 state，说明前瞻集没能分开——那是真问题，
 要查文法是否有别的错误，而不是去加优先级掩盖。**
 
+> ⚠️ **上一条验收标准在本项目后续被修正为「恰好 3 处」**：采纳 `Def : error`
+> （§6.3）后，除了悬空 else 还多出 2 处 `DefList` 可空引起的冲突。**归属仍是明确的**
+> —— State 26 `CompSt: LC • DefList StmtList RC`、State 31 `DefList: Def • DefList`、
+> State 114 悬空 else，全部 `1 shift/reduce`，无 reduce/reduce。
+> `StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）**不在其列**：结构体
+> 成员表后只能跟 `RC`，`error` 不进其前瞻集，那里的 `error` 是无歧义的移进。
+> 所以本节的原则不变（"**看归属，不是看数量**"），只是当前应有的数量是 **3**。
+
 ### 6.2.2 声明优先级**之前**的冲突数（Task 5 阶段，实测）
 
 ⚠️ **这一段是实测补充，不是本节原稿内容。** Task 5 做完后实测：
@@ -495,6 +504,7 @@ Task 6 要消除的对象。
 | Task 5（无任何优先级声明） | **101** | 100 `Exp` + 1 悬空 else |
 | Task 6 只声明 `ASSIGNOP`…`NOT`/`UMINUS`（**漏掉 `LB`/`DOT`**） | **21** | 20（`LB`/`DOT` 引起）+ 1 悬空 else |
 | Task 6 完整声明（**含 `LB`/`DOT`**，见 §6.2） | **1** | 只剩悬空 else |
+| **后续追加 `Def : error` 之后**（当前状态，见 §6.3） | **3** | 悬空 else 1 + `Def : error` 2 |
 
 ⚠️ **中间那一行是关键**：只声明其余运算符时，`Exp` 的 100 处只消掉 80 处，剩下 20 处
 **消不掉** —— 因为 `LB`/`DOT` 没声明优先级，`Exp PLUS Exp •` 遇 `LB` 这类冲突根本不进入
@@ -506,13 +516,19 @@ Task 6 要消除的对象。
 
 ### 6.3 错误恢复
 
-用 `error` 产生式让 Bison 能报告**多个**语法错误。**最终采用的集合（三处）**：
+用 `error` 产生式让 Bison 能报告**多个**语法错误。**最终采用的集合（四处，其中三处带
+同步符、一处不带）**：
 
 ```bison
 Stmt   : ... | error SEMI      /* 语句层 */
 CompSt : ... | error RC        /* 块层兜底 */
 ExtDef : ... | error SEMI      /* 顶层 */
+Def    : ... | error           /* 定义层 —— **不带同步符**，见下 */
 ```
+
+> ⚠️ **`Def : error` 这条是后续追加的，且"不带同步符"是实测选出来的，不是推演。**
+> 机理见本节末的「定义层出口 `Def : error`」小节。带同步符的三个出口与它不冲突：
+> 它们各自只管一层，`error` 的"丢弃"行为只发生在缺同步符会**少报**的那一层。
 
 > ⚠️ **本节的原始推演已被实测推翻，以下为更正后的内容。** 原稿曾设想的第三条出口是
 > `Exp : error RB`，且论证它能就地恢复样例 2 的 `a[5,3]`。**实测加入它反而报出 3 条
@@ -526,17 +542,21 @@ ExtDef : ... | error SEMI      /* 顶层 */
 （冲突数必须保持 1，见 §6.2.1），代价大于收益，故明确保留。"** 并据此把"顶层错误
 中止后续分析"写进了已知限制。
 
-**这个说法是错的 —— 它不是取舍，是本可免费修好的东西。** 实测两个 Bison 版本：
+**这个说法是错的 —— 它不是取舍，是本可免费修好的东西。** 实测两个 Bison 版本
+（下表前两行是 `Def : error` **落地前**的数据，后两行是**当前**文法的复测；
+bison 3.8.2 与 3.0.4 下**四行的数字都相同**）：
 
-| 文法 | bison 3.8.2 | bison 3.0.4 |
-|---|---|---|
-| 无 `ExtDef : error SEMI` | `State 111 conflicts: 1 shift/reduce` | `State 111 conflicts: 1 shift/reduce` |
-| 有 `ExtDef : error SEMI` | `State 113 conflicts: 1 shift/reduce` | `State 113 conflicts: 1 shift/reduce` |
+| 文法 | 冲突 state 数 | 悬空 else 所在 state | 总 state 数 |
+|---|---|---|---|
+| 无 `ExtDef : error SEMI`（旧文法） | 1 | 111 | — |
+| 有 `ExtDef : error SEMI`（旧文法） | **1** | **113** | — |
+| 无 `ExtDef : error SEMI`（**当前**文法） | **3** | **112** | 116 |
+| 有 `ExtDef : error SEMI`（**当前**文法） | **3** | **114** | 118 |
 
-两者的冲突 state **数**都是 1、内容都是那处悬空 else（`State 113` 即
-`Stmt: IF LP Exp RP Stmt •` vs `| IF LP Exp RP Stmt • ELSE Stmt`）；**编号从 111 变成
-113 只是因为多了一条产生式、多出两个 new state，不是多了一个冲突**。冲突数哨兵
-（§6.2.1）不受影响。
+加上它之后冲突 state 的**数**一个没多、内容都是那处悬空 else（当前文法下即
+`State 114` = `Stmt: IF LP Exp RP Stmt •` vs `| IF LP Exp RP Stmt • ELSE Stmt`）；
+**编号后移只是因为多了一条产生式、多出两个 new state，不是多了一个冲突**。冲突数
+哨兵（§6.2.1）不受影响 —— 期望值 1 或 3 的差别来自 `Def : error`，与本节无关。
 
 **效果（实测，`Test/err/toplevel_resync.cmm`）**：
 
@@ -568,7 +588,9 @@ ExtDef : ... | error SEMI      /* 顶层 */
 丢弃整条语句后在 `;` 同步）。行 5 恰好 1 条，行 6 由 `IF … Stmt . ELSE` 处暴露，1 条
 ——与要求书样例 2 完全一致。
 
-#### 三条产生式分别对应的实测结果
+#### 各条产生式分别对应的实测结果
+
+（`Stmt` / `ExtDef` / `CompSt` 三条见下；第四条 `Def : error` 见再下面的专节。）
 
 - `Stmt → error SEMI`：样例 2 行 6 `if (…) i = 1 else i = 0;` —— 弹到
   `IF LP Exp RP . Stmt` 后移进 `error`，在行尾 `;` 同步，**恰好报 1 条**；
@@ -579,25 +601,54 @@ ExtDef : ... | error SEMI      /* 顶层 */
 - `CompSt → error RC`：块层兜底，在 `}` 处同步。**理由在闭包层面，不在"附近有没有
   `;`"。**
 
-  `CompSt : LC • DefList StmtList RC` 的闭包里**根本没有 `Stmt : • error SEMI`**：
+  `CompSt : LC • DefList StmtList RC` 的闭包里**没有** `Stmt : • error SEMI`：
   `StmtList` 排在 `DefList` **之后**，点在 `DefList` 之前时闭包只展开 `DefList`
-  一侧。实测 `syntax.output` 里该状态是：
+  一侧（实测 `syntax.output` 里该状态连 `error` 之外的 Stmt 起始符都是靠
+  `DefList → ε` 归约让路的）。
 
-  ```
-  State 26
+  > ⚠️ **追记（`Def : error` 落地后，本小节的实测证据已过期，必须重读）。**
+  > 加入 `Def : error` 之后，State 26 的闭包里**多出了 `Def : • error`**，该状态
+  > 现在是这样（当前 `syntax.output` 逐字粘录）：
+  >
+  > ```
+  > State 26
+  >
+  >    32 CompSt: LC • DefList StmtList RC
+  >
+  >     error   shift, and go to state 28
+  >     TYPE    shift, and go to state 2
+  >     STRUCT  shift, and go to state 3
+  >
+  >     error   [reduce using rule 24 (DefList)]      ← 新增的冲突
+  >     INT/FLOAT/ID/MINUS/NOT/LP/LC/RC/RETURN/IF/WHILE  reduce using rule 24 (DefList)
+  > ```
+  >
+  > 所以"**一个 `error` 动作都没有**"这句**已经不再成立**，而"块内出错只能一路弹到
+  > `ExtDef : Specifier FunDec • CompSt`"也不再是当前行为 —— 出错时 Bison 现在会
+  > 就近移进 `error`、归约成 `Def`。
+  >
+  > **重新差分的结果（实测，当前文法）**：删掉 `CompSt : error RC` 后
+  >
+  > - 冲突 state **数量不变**（仍是 3 个，只是编号变成 25 / 30 / 112）；
+  > - 全部 **30 个用例仍然全过**，包括原先唯一能判别它的
+  >   `Test/err/block_resync.cmm`（输出仍是 `B4, B8`）；
+  > - 另外专门构造的 **28 组**"块内无法归入 Def/Stmt 的内容"差分输入
+  >   （`int main() { + }`、`int main() { struct { int a`、`struct S { int a } int g;`、
+  >   `int main() { int a int b int c }` …）**逐字节全部相同，0 组有差异**。
+  >
+  > 即：**原先用来论证"不要删"的两类输入，其判别力已被 `Def : error` 吸收**，
+  > 该出口现在**没有任何用例守护**。**本次不删**（删除错误恢复出口属于行为变更，
+  > 不在本轮改动范围内；且它不花冲突代价、不引入新 state 以外的影响，留着是纯保险）。
+  > 但**"保留是复审裁决过的结论、不要删"这句话的证据基础已经变了** —— 若将来有人
+  > 重测后主张删除，不能用本段旧数据反驳，要重新构造判别输入。
+  >
+  > 下面这段**修复前的历史记录**保留原貌（它记录的是 `Def : error` 落地**之前**的
+  > 实测，当时结论成立）：
 
-     31 CompSt: LC • DefList StmtList RC
-
-      TYPE    shift, and go to state 2
-      STRUCT  shift, and go to state 3
-
-      $default  reduce using rule 24 (DefList)
-  ```
-
-  ——**一个 `error` 动作都没有**（连 `$default` 都只是 `DefList → ε` 的归约）。
-  于是出错时 Bison 只能继续往外弹；`Def : Specifier • DecList SEMI` 同样没有
-  `error` 动作，一路弹到 `ExtDef : Specifier FunDec • CompSt` 才重新找到
-  `CompSt : • error RC`。**`CompSt : error RC` 是这一段唯一可达的出口。**
+  **修复前的实测（`Def : error` 落地前）**：出错时 Bison 只能继续往外弹；
+  `Def : Specifier • DecList SEMI` 同样没有 `error` 动作，一路弹到
+  `ExtDef : Specifier FunDec • CompSt` 才重新找到 `CompSt : • error RC`。
+  **`CompSt : error RC` 是那一段唯一可达的出口。**
 
   **"附近正好有 `;`"救不了**：`Stmt : error SEMI` 的同步符 `;` 压根不在闭包里，
   有没有 `;` 都一样。实测（差分：删掉本产生式后逐输入对拍）：
@@ -611,11 +662,45 @@ ExtDef : ... | error SEMI      /* 顶层 */
   第二行是**多报**：删掉后分析被弹到顶层、把 `int main() {` 整段当 `ExtDef : error SEMI`
   丢掉，剩下的 `}` 又变成一条**新的、假的**语法错误（`B4`）。第三行是**少报**：`}` 处
   同步让分析能回到 Program 层，后面那个函数的错误（`B8`）才报得出来。第三个输入就是
-  `Test/err/block_resync.cmm`（实测：删掉本产生式后该用例立刻变红）。
+  `Test/err/block_resync.cmm`。（**这三行是修复前的数据**；如上面的追记，当前文法下
+  它们与"删掉 `CompSt : error RC`"已无差异。）
 
   **保留 `CompSt : error RC` 是复审裁决过的结论**：曾有一轮整分支审查怀疑它"无贡献"、
-  主张删掉；实测推翻该主张（21 组差分输入里确实有 21 组看不出差别，上面这两类输入是
-  后来专门构造出来的）。**不要删。**
+  主张删掉；当时实测推翻该主张（21 组差分输入里确实有 21 组看不出差别，上面这两类输入
+  是后来专门构造出来的）。**本轮仍不删**，但请注意上面的追记：**这两类输入的判别力
+  已被 `Def : error` 吸收，当前 28 组差分组输入下删除它也 0 差异、冲突数不变**。
+  所以现在的保留理由从"有实测证据证明它不可删"变成了"**不留白删、留着当保险**"。**不要
+  拿本段旧数据当作它仍有贡献的证据。**
+
+#### 定义层出口 `Def : error`（**不带同步符**）—— 后续追加，纯收益
+
+**要修的问题**：块内局部定义缺分号时，`CompSt : LC • DefList StmtList RC` 的闭包里
+**没有** `error` 出口（理由见上文 `CompSt → error RC` 小节：`StmtList` 排在 `DefList`
+之后），Bison 只能弹到函数末尾的 `}`，于是**同一块内后续错误全被丢弃**。
+
+**关键结论：带不带同步符，行为完全不同 —— 而不带同步符不额外付冲突代价。**
+
+| 写法 | 冲突 state | 场景①：`int main()\n{\n  int a\n  int b;\n  a = 1\n  b = 2;\n}\n` | 场景②：`int main(){ int a } int f(){ int b }`（单行） |
+|---|---|---|---|
+| 不加 | 1 | 只报 1 条（`B4`，少报） | 报 2 条（`B1, B1`） |
+| `Def : error SEMI` | 3 | 报 2 条（`B4, B6`） | **只报 1 条**（`B1`，少报） |
+| `Def : error RC` | 3 | **只报 1 条**（`B4`，少报） | 报 2 条（`B1, B1`） |
+| **`Def : error`（裸）→ 采纳** | **3** | **报 2 条（`B4, B6`）** | **报 2 条（`B1, B1`）** |
+
+**机理**：带同步符时 Bison 先**丢弃**词法单元直到同步符出现才归约。场景②整份文件里
+一个 `;` 都没有，`SEMI` 版本只能丢到 EOF；场景①里 `RC` 版本则把 `}` 本身当作同步符
+吃掉。裸 `error` 移进后**立即归约、不丢弃任何前瞻**，两个场景都对。
+
+**为什么是纯收益**：上表里"不加"的冲突数是 1，三种加法的冲突数都是 3 —— `error SEMI`
+与裸 `error` 引入的是**同样的两个** state（`CompSt: LC • DefList StmtList RC` 与
+`DefList: Def • DefList`）。冲突由 `error` 这个**符号本身**引起（`DefList` 可空，
+"移进 `error`"与"按 `DefList → ε` 归约"不可兼得），与后面跟不跟同步符**无关**。
+故"去掉同步符"没有代价 —— 本文档此前把 `Def : error SEMI` 记为"代价大于收益"，
+**代价那一半是误判**（真实代价只有冲突数 1 → 3，与同步符无关）；而"收益"那一半在
+**多行错误样例**（评分包含）下是必需的。两处修正合起来，结论从"否决"翻转为"采纳"。
+
+**守护用例**：`Test/err/def_resync.cmm`（输入即场景①，`.exp` 为两行 `B4`/`B6`）。
+实测删掉本产生式后该用例立刻变红，加回即绿。
 
 #### 已试并否决的备选（实测数据）
 
@@ -624,7 +709,9 @@ ExtDef : ... | error SEMI      /* 顶层 */
 | `Exp : error RB` | 1 → 1 | **否决**：不报错但语义有害，同一行报出 2 条错误，违反 2.1.3 |
 | 裸 `Exp : error` | 1 → 2 | 否决：引入新冲突且无必要 |
 | `ExtDef : error SEMI` | 1 → 1 | **采纳**（本文档此前误记为 1 → 增加，实测两版 Bison 均仍为 1，见上文小节） |
-| `Def : error SEMI` | 1 → 3 | 否决：`DefList` 可空，遇 `error` 时"移进"与"按 `DefList → ε` 归约"不可兼得；**代价大于收益**（见下方已知限制） |
+| `Def : error SEMI` | 1 → 3 | **否决**：冲突数变化与裸式**相同**，但它**会少报**（见上表场景②）。否决理由是"少报"，**不再是"冲突代价"** |
+| `Def : error RC` | 1 → 3 | **否决**：同上，**会少报**（见上表场景①），否决理由同样是"少报" |
+| **裸 `Def : error`** | 1 → 3 | **采纳**（见上一小节）：同一冲突代价，但两个场景都对 |
 
 #### 已知限制（明知的取舍，非静默缺陷）
 
@@ -661,8 +748,11 @@ Error type A at Line 2: Mysterious character "~".
 
 ```
 $ 差分：把 main.c 的抽干循环改成 `if (0)` 后逐用例对拍
-  有抽干 vs 无抽干：29 个用例输出完全相同，0 个不同
+  有抽干 vs 无抽干：30 个用例输出完全相同，0 个不同
 ```
+
+（本行原为 "29 个用例、0 个不同"，是在加入 `Def : error` 与 `Test/err/def_resync.cmm`
+**之后重测过的** —— 新增的恢复出口没有让抽干循环重新变得可达。）
 
 即它已从"必要的补丁"退化为**安全网**（保留它，是为了不让"顶层恢复能力"成为唯一
 防线；它对本项目的输出已无影响）。固定"顶层错误之后词法错误一条不少"的用例仍是
@@ -674,7 +764,13 @@ $ 差分：把 main.c 的抽干循环改成 `if (0)` 后逐用例对拍
 （实测 `yyparse()` 返回 1）。若错误点之后有 `;`，恢复就能完成，分析会正常走完。
 
 
-**二、局部变量定义处缺分号时，一个语句块内只能报出第一处。** 例如：
+**二、局部变量定义处缺分号时一个语句块内只能报出第一处 —— 已修复，保留记录备查。**
+
+> ⚠️ **本条已不再是限制。** 修法是给 `Def` 补一个**不带同步符**的出口
+> `Def : error`（详见上文「定义层出口 `Def : error`」小节）。此处保留修复前的实测
+> 记录与**修复后**的对照，以便复现与防止回退。
+
+**修复前的症状**：
 
 ```
 int main() {
@@ -685,22 +781,52 @@ int main() {
 }
 ```
 
-实测**只报行 3**（原稿写作"行 4"，是错的；行号取的是**触发错误的那个先行词法单元**
-`int`（行 3）所在行，而不是"缺分号的那一行"行 2 —— 与 `Test/err/multi_errors.exp`
-的行号口径一致）：
+实测**只报行 3**（行号取的是**触发错误的那个先行词法单元** `int`（行 3）所在行，
+而不是"缺分号的那一行"行 2）：
 
 ```
 $ ./parser /tmp/doc/b.cmm        # 输入即上方代码块
-Error type B at Line 3: Syntax error.
+Error type B at Line 3: Syntax error.          ← 修复前：只 1 条
 ```
 
-因为缺分号的是 **Def 层**错误，而 `CompSt → LC . DefList StmtList RC`
-状态的闭包里**没有** `error` 出口（`StmtList` 在 `DefList` **之后**，不在其闭包中），
-Bison 只能一路弹到 `ExtDef → Specifier FunDec . CompSt`，在函数末尾的 `}` 处同步 ——
-**块内**后续错误全部被丢弃。
+原因：缺分号的是 **Def 层**错误，而 `CompSt → LC . DefList StmtList RC` 状态的闭包里
+**没有** `error` 出口（`StmtList` 在 `DefList` **之后**，不在其闭包中），Bison 只能一路
+弹到 `ExtDef → Specifier FunDec . CompSt`，在函数末尾的 `}` 处同步 —— **块内**后续错误
+全部被丢弃。
 
-**限制的边界（实测）**：同步点是函数末尾的 `}`，所以丢弃只发生在**该函数体内部**；
-`}` 之后的兄弟定义仍会被正常解析和检查。两个函数各缺一处分号时两处都会被报出：
+**修复后（实测，同一份输入）**：
+
+```
+$ ./parser /tmp/doc/b.cmm
+Error type B at Line 3: Syntax error.
+Error type B at Line 5: Syntax error.          ← 修复后：2 条，块内后续错误不再丢
+```
+
+**仓库里的固定用例是 `Test/err/def_resync.cmm`**（排版略有不同：`{` 独占一行，故触发点
+整体后移一行，`.exp` 为 `Line 4` / `Line 6`）：
+
+```
+1  int main()          3    int a      ← 缺分号（触发点是下一行的 int，行 4）
+2  {                   4    int b;     ← 该行不会被报错
+3    int a             5    a = 1      ← 缺分号（触发点是下一行，行 6）
+4    int b;            6    b = 2;     ← 也不会被报错
+5    a = 1             7  }
+6    b = 2;
+7  }
+```
+
+两处口径完全一致 —— 都是**触发错误的那个先行词法单元**所在行。**不要把行号直接抄到
+别的排版上**：同一份错误在不同排版下报出的行号本就不同。
+
+**代价与取舍（已按实测更新）**：冲突数 1 → 3。**但这不是"为覆盖率付冲突代价"** ——
+那 2 处新增冲突由 `error` 符号本身引起，**带同步符的 `Def : error SEMI` 有完全相同的
+代价**（见上文对照表）。所以真实取舍只是"要不要这个出口"，而评分包含多行错误样例，
+**要**。哨兵（§6.2.1、`scripts/run_tests.sh`）的**灵敏度不变**（冲突数一变就报警），
+只是期望值由 1 改为 3。
+
+**限制的边界（修复前实测，仍然成立）**：同步点是函数末尾的 `}`，所以丢弃只发生在
+**该函数体内部**；`}` 之后的兄弟定义仍会被正常解析和检查。两个函数各缺一处分号时
+两处都会被报出：
 
 ```
 $ ./parser /tmp/doc/c.cmm
@@ -708,11 +834,8 @@ Error type B at Line 4: Syntax error.
 Error type B at Line 9: Syntax error.
 ```
 
-**取舍依据**：要求书只演示了一处多处错误的样例（样例 2），那是语句层错误，我们**已
-完全覆盖**。补 `Def : error SEMI` 能覆盖上述情形，代价是冲突数 1→3 且引入一个真实的
-`DefList → ε` 移进/归约歧义。**冲突数本身不是评分项，但"恰好 1 处"是本项目用来发现
-文法退化的哨兵** —— 实测证明它能发现 `%left LB DOT` 这类**所有测试都察觉不到**的静默
-删除。故保留哨兵的灵敏度，把该限制记录在此。
+**回退检测**：删掉 `Def : error` 后 `Test/err/def_resync.cmm` 立刻变红
+（实测：`.exp` 少一行，且 `run_tests.sh` 的冲突数断言同时报 1 ≠ 3）。
 
 **三、同一行上、跟在本条 type A 之后报出的 type B 会被抑制 —— 这可能吞掉一条真实的
 语法错误。**
@@ -766,8 +889,8 @@ type B。** 这是"按行号近似"的固有代价，不是可以靠改判据消
 - 用 `%define api.value.type {Node *}` 而非 `%union`
 - **不使用** `%define parse.error detailed`（Bison 3.0.4 不支持该值）
 - 错误信息在 `yyerror` 中自行拼装，不依赖 Bison 的错误文本
-- **已在 bison 3.0.4 实机复跑**（此前这里写"无法实机验证"，不成立）：整套 29 个用例
-  全过、冲突数同样恰好 1、冲突 state 编号也与 3.8.2 一致。做法与实测表见 §2.2。
+- **已在 bison 3.0.4 实机复跑**（此前这里写"无法实机验证"，不成立）：整套 30 个用例
+  全过、冲突数同样恰好 3、冲突 state 编号也与 3.8.2 一致。做法与实测表见 §2.2。
 
 ---
 
@@ -847,8 +970,8 @@ Error type A at Line 3: Illegal floating point number "1.05e".
 
 1. **`src/main.c` 的抽干循环**（`yyparse()` 返回后把 `yylex()` 抽干到返回 0）。当时的
    决策是"不动文法"，因为误以为顶层加 `error` 出口会增加冲突；
-2. **`ExtDef : error SEMI`**（文法出口本身）。实测冲突数**两版 Bison 都仍是 1**，代价
-   为零，故已采纳 —— 这一层是治本的。
+2. **`ExtDef : error SEMI`**（文法出口本身）。实测冲突**数不变**（旧文法 1 → 1，当前
+   文法 3 → 3，两版 Bison 一致，见 §6.3 的表），代价为零，故已采纳 —— 这一层是治本的。
 
 以 `int a = 1;` 换行 `int b = ~2;` 为例，三种配置的**完整实测输出**（同样三份，逐字）
 见 §6.3 已知限制一的代码块：无出口无抽干 → 只有 `B1`；无出口有抽干 → `B1, A2`；
@@ -857,7 +980,7 @@ Error type A at Line 3: Illegal floating point number "1.05e".
 
 **副作用（已实测，见 §6.3 已知限制一）**：顶层不再中止之后，`main.c` 的抽干循环再也
 取不到任何词法单元 —— 把全部用例在"有抽干 / 无抽干"两个二进制上对拍，输出**逐字节
-完全相同**（29 个用例、0 个不同）。它从此是**安全网**，不再是被用例守护的补丁；这一点
+完全相同**（30 个用例、0 个不同，见 §6.3 已知限制一的实测块）。它从此是**安全网**，不再是被用例守护的补丁；这一点
 必须写明，否则会误以为 `Test/err/drain_after_toplevel.cmm` 在守护 `main.c` 那个循环。
 
 **该用例如今钉住的是另一件事**：顶层错误之后**一个 `;` 都没有**时分析**仍然中止**
@@ -935,10 +1058,10 @@ Compiler-Principles/
 ├── Test/
 │   ├── sample/                  # 要求书样例：NN.cmm + NN.exp
 │   └── err/                     # 自建边界用例
-├── scripts/
+├── scripts/                     # 开发期自检工具；**无对应的 make 目标**
 │   ├── probe_env.sh             # 环境探测
 │   ├── setup_wsl_toolchain.sh   # WSL 工具链安装
-│   └── run_tests.sh             # 跑全部用例并 diff 期望输出
+│   └── run_tests.sh             # 跑全部用例并 diff 期望输出（直接 bash 调用）
 └── docs/superpowers/specs/
 ```
 
@@ -947,7 +1070,8 @@ Compiler-Principles/
 | 改动 | 原因 |
 |---|---|
 | 去掉 `-ly` | 本机无 `liby`；且自定义了 `main` 与 `yyerror`，不需要 |
-| `test` 目标路径改为 `Test/sample/...` | `Makefile_ref` 的 `../Test/` 假设 `Test/` 是代码目录的兄弟目录，本项目放内部 |
+| ~~`test` 目标路径改为 `Test/sample/...`~~ | 曾把 `Makefile_ref` 的 `test` 目标路径从 `../Test/`（假设 `Test/` 是兄弟目录）改成本项目的内部路径。**该目标现已整体删除**（见下一行） |
+| **删除 `test` 目标** | 评分流程是 `make` + `./parser <文件>`，不需要测试入口。让 `test` 指向开发期目录 `scripts/`，会把"构建可用性"绑在"该目录是否随提交打包"上（打包时漏掉它，`make test` 直接坏掉）。自检改为直接 `bash scripts/run_tests.sh`（见 §9.2）。**Makefile 里保留 `unit-test` / `lexer-test`**，它们不依赖 `scripts/` |
 | 增加 `cc` 软链接目标 | 要求书样例用 `./cc test1`，参考 Makefile 产出 `parser`，两者都提供以规避不确定性 |
 | **注明不要用 `make -j`** | `syntax.tab.c syntax.tab.h: src/syntax.y` 是"一个 recipe、两个目标"的多目标规则，`make -j` 会**并发跑两次 bison**、两次写同一个 `syntax.tab.c`。可移植的分组写法 `&:` 需要 make ≥ 4.3，而评分镜像是 Ubuntu 20.04 的 make 4.2，故**不用 `&:`**，改为在 Makefile 里写明这一条 |
 
@@ -978,6 +1102,10 @@ Compiler-Principles/
      —— 顶层出错后在 `;` 处同步，后续顶层错误仍报得出来。删掉该产生式此用例立刻变红）
    - **函数体内未闭合注释**（`Test/err/unterm_inbody.cmm`；钉住 §7.4(3) 的 B 行号）
    - **块层 `error RC` 复位**（`Test/err/block_resync.cmm`；钉住 §6.3 的 `CompSt : error RC`）
+   - **定义层 `error` 复位**（`Test/err/def_resync.cmm`；钉住 §6.3 的 `Def : error`
+     —— 块内局部定义缺分号后，同块**后续**错误仍报得出来。删掉该产生式此用例立刻
+     变红：实测 `.exp` 少一行，且冲突数断言同时报 1 ≠ 3。它是"**不带同步符**"这一
+     选择的守护用例：换成 `Def : error SEMI` 或 `error RC` 都会让它变红）
 3. **要求书样例的端到端副本**（`Test/sample/illegal_oct.cmm`、`illegal_exp.cmm`）：
    选做样例 2 / 样例 4 此前只被**词法单测**覆盖（直接调 `yylex()`，看不见语法层），
    于是"非法数字连报一条同行 type B"的缺陷潜伏至今。这两个用例走完整 `parser`，
@@ -989,14 +1117,15 @@ Compiler-Principles/
 
 > **第 1 条"绝不从程序输出反填"的例外，如实说明**：第 2、4 条里的自建用例
 > （`drain_after_toplevel`、`toplevel_resync`、`unterm_inbody`、`block_resync`、
-> `floatbuf`）**必然是反填的** —— 它们本来就是要固定"当前实现的行为"，不存在可抄的
-> 官方期望。为不让反填变成"验证程序等于它自己"，这些用例**各自做了独立交叉验证**：
+> `def_resync`、`floatbuf`）**必然是反填的** —— 它们本来就是要固定"当前实现的行为"，
+> 不存在可抄的官方期望。为不让反填变成"验证程序等于它自己"，这些用例**各自做了独立
+> 交叉验证**：
 > - `floatbuf` 的数值用 `python3 -c 'print("%f" % 0.5e103)'` **独立算出**，与程序输出
 >   逐字比对（不是抄程序输出）；`floatbuf.exp` 的结构部分抄自 `expfloat.exp`（那是
 >   要求书样例的手抄副本）；
-> - `drain_after_toplevel` / `toplevel_resync` / `block_resync` 都用**变异测试**证明
->   判别力：删掉被守护的那条产生式（或把 `NUMBUF` 改小），用例必须变红（§6.3、§7.4、
->   §9.2 各给出了实测 diff）；
+> - `drain_after_toplevel` / `toplevel_resync` / `block_resync` / `def_resync` 都用
+>   **变异测试**证明判别力：删掉被守护的那条产生式（或把 `NUMBUF` 改小），用例必须
+>   变红（§6.3、§7.4、§9.2 各给出了实测 diff）；
 > - `unterm_inbody` 的行号口径与要求书对"行号 = 第一个词素出现的行"的定义一致，且
 >   它的判别力来自"删掉 `curTokenLine = yylineno` 后 B 会倒指回第 3 行"（§7.4(3)）。
 >
@@ -1022,18 +1151,25 @@ Compiler-Principles/
 `unit-test` / `lexer-test` 各自负责），比对同名 `.exp`，输出 diff 与汇总。
 全部用例在 WSL 中运行。
 
-**当前共 29 个用例**，预期以「通过 29 个，失败 0 个」结尾（要求在 bison 3.8.2 与
-3.0.4 下各复跑一次，两次都是 29/29；见 §2.2）。**新增用例时必须同步更新这个数字** ——
+**当前共 30 个用例**，预期以「通过 30 个，失败 0 个」结尾（要求在 bison 3.8.2 与
+3.0.4 下各复跑一次，两次都是 30/30；见 §2.2）。**新增用例时必须同步更新这个数字** ——
 README 与本文档都写着它，`run_tests.sh` 也会在"一个用例都没跑"时报 FAIL。
+
+> 调用方式：**直接 `bash scripts/run_tests.sh`**（需先 `make`）。Makefile 里**没有**
+> `test` 目标 —— 评分流程是 `make` + `./parser <文件>`，不需要测试入口；而把
+> `test` 挂在开发期目录 `scripts/` 上，等于让"构建可用性"取决于该目录是否随提交
+> 一起打包。`make` 必须能独立跑通，故测试入口只写进文档。
 
 脚本除了比对 stdout，还断言两件"比对本身看不见"的事：
 
 - **stderr 必须为空**。此前用 `> "$tmp" 2>&1`，把错误信息改成写 stderr 仍然全绿，
   而要求书 2.1.3 要求输出到**标准输出**（判分脚本读 stdout）。现已改为 stdout 与
   stderr 分别重定向，stderr 非空即判 FAIL。
-- **`syntax.output` 里恰好 1 个冲突 state 且为 `1 shift/reduce`**（悬空 else）。
-  这条哨兵不可省：实测有无 `%left LB DOT` 的 LR 动作表**完全相同**，全部 `.exp` 比对
-  都察觉不到它被误删，只有冲突计数能发现。
+- **`syntax.output` 里恰好 3 个冲突 state 且每个都是 `1 shift/reduce`**（悬空 else 1 +
+  `Def : error` 引起的 2，归属见 §6.2.1 / §6.3）。这条哨兵不可省：实测有无
+  `%left LB DOT` 的 LR 动作表**完全相同**，全部 `.exp` 比对都察觉不到它被误删，只有
+  冲突计数能发现。**期望值由 1 改为 3 不改变哨兵语义**（冲突数一变就报警，不区分
+  "变好"还是"变坏"）。
 
 ---
 
@@ -1043,8 +1179,8 @@ README 与本文档都写着它，`run_tests.sh` 也会在"一个用例都没跑
 |---|---|---|
 | 多行注释导致 `yylineno` 漏计 | 报错行号错误 → 直接失分 | §5.6：`yylineno` 由 flex 自动维护，**禁止**在 action 里手工 `+=`（会重复计数）；未闭合注释另存 `commentStart` 取其起始行 + 专项用例 `Test/err/unterm.cmm` |
 | 十六进制校验模式误写成 `{LETTER}+` | `0x3G` 检测不到，静默漏报 | §5.3 已写明必须用 `({LETTER}\|{DIGIT})+` + 专项用例 |
-| `error` 产生式引入**清单外**的新冲突 | 可能改变正常语句的解析 | `bison -v` 检查 `syntax.output`，与 §6.2.1 清单比对；`run_tests.sh` 断言冲突 state 恰好 1 个且为 `1 shift/reduce` |
-| Bison 3.8.2 与评分环境 3.0.4 的行为差异 | 评分机上编译失败 | 只用两版通用的写法（§6.4），**并已在 3.0.4 实机复跑 29/29**（§2.2） |
+| `error` 产生式引入**清单外**的新冲突 | 可能改变正常语句的解析 | `bison -v` 检查 `syntax.output`，与 §6.2.1 清单比对；`run_tests.sh` 断言冲突 state **恰好 3 个**且每个为 `1 shift/reduce`（State 26 / 31 / 114） |
+| Bison 3.8.2 与评分环境 3.0.4 的行为差异 | 评分机上编译失败 | 只用两版通用的写法（§6.4），**并已在 3.0.4 实机复跑 30/30**（§2.2） |
 | 样例期望输出为手工抄录 | 抄错会导致"程序正确却测试失败" | 抄录后与 PDF 二次核对；自建用例的反填例外与交叉验证见 §9.1 |
 | `printTree` 误判结点类型 | 输出格式整体错乱 | §4 显式 `kind` 字段，不靠推测 |
 | 用 `make -j` 构建 | 并发跑两次 bison 写同一个 `syntax.tab.c` | Makefile 里已写明不要用 `-j`；评分镜像的 make 4.2 不支持 `&:`（§8） |

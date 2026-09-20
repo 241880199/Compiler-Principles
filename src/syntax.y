@@ -101,8 +101,39 @@ DefList
   | /* empty */                 { $$ = newNode("DefList", 0); }
   ;
 
+/* 错误恢复同步点之四（定义层）：**不加同步符**（对照上面 `ExtDef`、下面 `Stmt`/`CompSt`
+   三处都带同步符）。
+
+   要修的问题：`CompSt : LC • DefList StmtList RC` 状态的闭包里**没有** `error` 出口
+   （`StmtList` 排在 `DefList` 之后，不在其闭包中），于是块内局部定义缺分号时，Bison
+   一路弹到 `CompSt : error RC`，在函数末尾的 `}` 处同步 —— **同一块内后续错误全被丢弃**。
+
+   为什么**不能**带同步符：带同步符时 Bison 先**丢弃**词法单元直到同步符出现，才按本式
+   归约；而不带同步符时移进 `error` 后**立即归约**，不丢弃任何前瞻。实测（同一份输入
+   `int main(){ int a } int f(){ int b }`，整份文件里**一个 `;` 都没有**）：
+
+     `Def : error SEMI` → 丢弃到 EOF，**只报 1 条**（少报，本要修的问题原样保留）；
+     `Def : error`（本式）→ 立即归约，后续 `}` 与下一个函数照常解析，**报 2 条**。
+   `Def : error RC` 同理（甚至更糟：`}` 被同步符吃掉，块内定义后续内容整段消失）。
+
+   代价（实测）：新增 2 个冲突 state —— `DefList` 可空，于是"看 `error` 时移进"与
+   "按 `DefList → ε` 归约"不可兼得。**这两处的确切归属（粘自 syntax.output）**：
+
+     State 26  `CompSt: LC • DefList StmtList RC`
+     State 31  `DefList: Def • DefList`          ← 递归式，前瞻集与 State 26 相同
+
+   注意**不是** `StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）——
+   结构体成员表后面只能跟 `RC`，`error` 不进它的前瞻集，那里 `error` 是个无歧义的
+   移进动作，**不冲突**。两者都落在 `CompSt` 一路，因为只有那里 `error` 能跟在
+   `DefList` 之后（`StmtList` 可以 `error` 开头）。
+   连悬空 else（State 114）在内，冲突 state 总数由 1 变 3。
+   这与 `Def : error SEMI` 引入的冲突**完全相同**（两者的冲突都由 `error` 这个符号
+   本身引起，与后面跟不跟同步符无关）—— 即同步符的取舍是**纯收益**，不额外付冲突代价。
+   冲突数哨兵的期望值已随之改为 3（scripts/run_tests.sh），守护本式的用例是
+   Test/err/def_resync.cmm（删掉本式后立刻变红）。 */
 Def
   : Specifier DecList SEMI      { $$ = newNode("Def", 3, $1, $2, $3); }
+  | error                       { $$ = newNode("Def", 1, $1); }
   ;
 
 FunDec

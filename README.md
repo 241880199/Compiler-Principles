@@ -50,9 +50,12 @@ gcc --version | head -1; flex --version; bison --version | head -1; make --versi
 
 | 检查项 | bison 3.8.2 | bison 3.0.4 |
 |---|---|---|
-| 编译警告 | 仅 1 处 shift/reduce 冲突 | 仅 1 处 shift/reduce 冲突 |
-| 冲突 state | `State 113 conflicts: 1 shift/reduce` | `State 113 conflicts: 1 shift/reduce` |
-| `make test` | **通过 29 个，失败 0 个** | **通过 29 个，失败 0 个** |
+| 编译警告 | 3 处 shift/reduce 冲突 | 3 处 shift/reduce 冲突 |
+| 冲突 state | `26` / `31` / `114`，各 `1 shift/reduce` | `26` / `31` / `114`，各 `1 shift/reduce` |
+| `bash scripts/run_tests.sh` | **通过 30 个，失败 0 个** | **通过 30 个，失败 0 个** |
+
+（冲突由 1 变 3 是采纳 `Def : error` 的结果：其中 2 处由它引起、1 处仍是悬空 else。
+详见下文「测试」一节的冲突断言语与 `src/syntax.y` 的注释。）
 
 **Bison 版本兼容**：为兼容评分环境的 Bison 3.0.4，文法中**不使用** `%define parse.error
 detailed`（3.0.4 无此值）等 3.1+ 新增写法；语义值用 `%define api.value.type {Node *}`
@@ -78,8 +81,9 @@ make clean && make
 同一个 `syntax.tab.c`。可移植的分组写法（`&:`）需要 make ≥ 4.3，评分镜像是 Ubuntu
 20.04 的 make 4.2，因此不使用 `&:`，而是明确要求串行构建（本项目很小，耗时可忽略）。
 
-预期：**无编译错误、无 gcc 警告**；Bison 只报 1 处 shift/reduce 冲突，即悬空 else，
-属预期（见下）。若终端里没有 `syntax.output`，`make test` 的冲突数断言无法执行。
+预期：**无编译错误、无 gcc 警告**；Bison 报 3 处 shift/reduce 冲突（悬空 else 1 处 +
+`Def : error` 引起的 2 处），全部属预期（见下）。若终端里没有 `syntax.output`，
+自检脚本的冲突数断言无法执行。
 
 ## 运行
 
@@ -95,22 +99,42 @@ make clean && make
 - 退出码：正常分析完毕返回 `0`（无论有无词法/语法错误）；仅当缺少文件名参数或
   文件打不开时返回 `1`。
 
-## 测试
+## 测试（**可选**的自检；评分流程不依赖它）
 
 ```bash
-make test       # 跑 Test/sample 与 Test/err 下全部用例，与同名 .exp 逐字节比对
+make                       # 自检脚本需要 ./parser
+bash scripts/run_tests.sh  # 跑 Test/sample 与 Test/err 下全部用例，与同名 .exp 逐字节比对
 ```
 
-预期输出以 `通过 29 个，失败 0 个` 结尾（在 bison 3.8.2 与 3.0.4 下各复跑一次，
-两次都是 29/29）。
+评分流程是 `make` + `./parser <文件>`，**不需要**测试入口；因此 Makefile 里
+**没有** `test` 目标 —— 不让"构建可用性"依赖 `scripts/` 这个开发期目录是否
+随提交一起打包（打包时漏掉它，`make test` 就会坏，而 `make` 本身不该受影响）。
+自检脚本仍在仓库里（`scripts/run_tests.sh`），要用就按上面的命令直接调。
 
-`make test` 除比对用例之外还做三条断言，三条都不可省：
+预期输出以 `通过 30 个，失败 0 个` 结尾（在 bison 3.8.2 与 3.0.4 下各复跑一次，
+两次都是 30/30）。
 
-1. **冲突数恰好 1**（`syntax.output` 中恰有 1 个 `State N conflicts: 1 shift/reduce`）。
-   这是悬空 else，Bison 默认移进即 C 语义，保持默认。此断言是防文法退化的**哨兵**：
-   实测把 `%left LB DOT` 删掉后，LR 动作表 `yypact/yydefact/yytable/yycheck/...`
-   **逐字节完全不变**，全部用例照过，**只有冲突计数**（1 → 11 个 state、
-   21 处 shift/reduce）能发现它。
+自检脚本除比对用例之外还做三条断言，三条都不可省：
+
+1. **冲突数恰好 3**（`syntax.output` 中恰有 3 个 `State N conflicts: 1 shift/reduce`），
+   归属为：
+
+   | # | state | 产生式项 | 冲突 |
+   |---|---|---|---|
+   | ① | 26 | `CompSt: LC • DefList StmtList RC` | 移进 `error` vs 按 rule 24 (`DefList`) 归约 |
+   | ② | 31 | `DefList: Def • DefList` | 同上（`DefList` 递归，前瞻集不变） |
+   | ③ | 114 | `Stmt: IF LP Exp RP Stmt •` / `\| IF LP Exp RP Stmt • ELSE Stmt` | 悬空 else |
+
+   ①② 都由 `Def : error` 引起（**`DefList` 可空**，故"看 `error` 时移进"与
+   "按 `DefList → ε` 归约"不可兼得），且都出现在 `CompSt` 一路 —— `error` 能跟在
+   `DefList` 之后是因为 `StmtList` 可以 `error` 开头；`StructSpecifier : STRUCT
+   OptTag LC • DefList RC`（State 20）**不冲突**，结构体成员表后面只能跟 `RC`，
+   `error` 不进它的前瞻集。③ 是悬空 else，Bison 默认移进即 C 语义。
+
+   此断言是防文法退化的**哨兵**，**语义不随期望值改变**（冲突数一变就报警，不区分
+   "变好"还是"变坏"）。实测把 `%left LB DOT` 删掉后，LR 动作表
+   `yypact/yydefact/yytable/yycheck/...` **逐字节完全不变**，全部用例照过，
+   **只有冲突计数**（3 → 13 个 state、23 处 shift/reduce）能发现它。
 2. **`Test/err/crlf.cmm` 必须真含 CR**。该用例的全部价值在 `\r` 上（验证空白规则
    `[ \t\r]+` 能吃掉 CRLF）。`.gitattributes` 用 `-text` 让它在索引里保留 CRLF，
    但那只保护"入索引的那一刻"；若有人就地把它改写成 LF，全部用例照过、防线静默
@@ -120,7 +144,8 @@ make test       # 跑 Test/sample 与 Test/err 下全部用例，与同名 .exp 
    改成写 stderr 仍然全绿，而要求书 2.1.3 要求输出到**标准输出**（判分脚本读 stdout）
    —— 合并流会让这条规范悄悄失效。
 
-另有两条单测目标（不在 `make test` 范围内）：
+另有两条单测目标（**不依赖 `scripts/`，因此与自检脚本的有无无关**；需先 `make`
+生成 `lex.yy.c` / `syntax.tab.c`）：
 
 ```bash
 make unit-test      # 语法树构造与打印（Test/unit/test_tree）
@@ -136,7 +161,8 @@ Test/sample/    要求书样例（NN.cmm + NN.exp 逐字手抄）；另有 float
                 是守护 NUMBUF（大浮点值不被截断）的关键用例
 Test/err/       自建边界用例
 Test/unit/      单测（语法树 / 词法分析器）
-scripts/        环境安装、环境探测、测试执行脚本
+scripts/        开发期自检脚本（run_tests.sh 等）；**没有对应的 make 目标**
+                （评分流程不需要，见「测试」一节）
 docs/           设计文档、实验报告大纲
 ```
 
