@@ -50,8 +50,11 @@ Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c sr
 lexer-test: Test/unit/test_lexer
 	@bash -o pipefail -c './Test/unit/test_lexer < Test/unit/lexer_in.cmm | diff -u Test/unit/lexer_expected.txt -' && echo "PASS lexer"
 
-# 注：这里**没有** `test` 目标。提交内容里不含 `scripts/`（评分方的【文件结构测试】
-# 会看提交内容），留一个指向不存在路径的目标只会让人以为它能跑。自检请直接：
+# 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
+# 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
+# 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
+# `make` 本身必须能独立跑通，故把测试入口交给文档说明，不做成 make 目标。
+# 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 是否存在
 
 .PHONY: clean unit-test lexer-test

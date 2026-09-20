@@ -1058,10 +1058,10 @@ Compiler-Principles/
 ├── Test/
 │   ├── sample/                  # 要求书样例：NN.cmm + NN.exp
 │   └── err/                     # 自建边界用例
-├── scripts/                     # 开发期自检工具；**不是提交物的一部分**
+├── scripts/                     # 开发期自检工具；**无对应的 make 目标**
 │   ├── probe_env.sh             # 环境探测
 │   ├── setup_wsl_toolchain.sh   # WSL 工具链安装
-│   └── run_tests.sh             # 跑全部用例并 diff 期望输出（无对应 make 目标）
+│   └── run_tests.sh             # 跑全部用例并 diff 期望输出（直接 bash 调用）
 └── docs/superpowers/specs/
 ```
 
@@ -1071,7 +1071,7 @@ Compiler-Principles/
 |---|---|
 | 去掉 `-ly` | 本机无 `liby`；且自定义了 `main` 与 `yyerror`，不需要 |
 | ~~`test` 目标路径改为 `Test/sample/...`~~ | 曾把 `Makefile_ref` 的 `test` 目标路径从 `../Test/`（假设 `Test/` 是兄弟目录）改成本项目的内部路径。**该目标现已整体删除**（见下一行） |
-| **删除 `test` 目标** | 提交内容不含 `scripts/`，留一个指向不存在路径的目标是负债，会让人以为它能跑。自检改为直接 `bash scripts/run_tests.sh`（见 §9.2）。**Makefile 里保留 `unit-test` / `lexer-test`**，它们不依赖 `scripts/` |
+| **删除 `test` 目标** | 评分流程是 `make` + `./parser <文件>`，不需要测试入口。让 `test` 指向开发期目录 `scripts/`，会把"构建可用性"绑在"该目录是否随提交打包"上（打包时漏掉它，`make test` 直接坏掉）。自检改为直接 `bash scripts/run_tests.sh`（见 §9.2）。**Makefile 里保留 `unit-test` / `lexer-test`**，它们不依赖 `scripts/` |
 | 增加 `cc` 软链接目标 | 要求书样例用 `./cc test1`，参考 Makefile 产出 `parser`，两者都提供以规避不确定性 |
 | **注明不要用 `make -j`** | `syntax.tab.c syntax.tab.h: src/syntax.y` 是"一个 recipe、两个目标"的多目标规则，`make -j` 会**并发跑两次 bison**、两次写同一个 `syntax.tab.c`。可移植的分组写法 `&:` 需要 make ≥ 4.3，而评分镜像是 Ubuntu 20.04 的 make 4.2，故**不用 `&:`**，改为在 Makefile 里写明这一条 |
 
@@ -1156,7 +1156,9 @@ Compiler-Principles/
 README 与本文档都写着它，`run_tests.sh` 也会在"一个用例都没跑"时报 FAIL。
 
 > 调用方式：**直接 `bash scripts/run_tests.sh`**（需先 `make`）。Makefile 里**没有**
-> `test` 目标 —— 提交内容不含 `scripts/`，留一个指向不存在路径的目标是负债。
+> `test` 目标 —— 评分流程是 `make` + `./parser <文件>`，不需要测试入口；而把
+> `test` 挂在开发期目录 `scripts/` 上，等于让"构建可用性"取决于该目录是否随提交
+> 一起打包。`make` 必须能独立跑通，故测试入口只写进文档。
 
 脚本除了比对 stdout，还断言两件"比对本身看不见"的事：
 
