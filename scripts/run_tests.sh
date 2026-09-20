@@ -46,7 +46,13 @@ if [ -f syntax.output ]; then
         fail=$((fail + 1))
     fi
 else
-    echo "SKIP  冲突数断言（未找到 syntax.output；需先 make，它由 bison -v 生成）"
+    # 判 FAIL 而非 SKIP：脚本开头已确认 ./parser 存在，而 `test` 目标依赖 parser
+    # （其构建必经 bison -v），所以 syntax.output 本应存在。缺失说明构建链被绕过 ——
+    # 那正是这条断言最该警觉的情形，SKIP 等于在需要它的时候关掉它。
+    echo "FAIL  未找到 syntax.output —— 冲突数断言无法执行"
+    echo "      （它由 bison -v 生成。脚本开头已确认 ./parser 存在，而 test 目标依赖"
+    echo "        parser，故该文件本应存在；缺失说明构建链被绕过）"
+    fail=$((fail + 1))
 fi
 
 echo "----------------------------------------"
