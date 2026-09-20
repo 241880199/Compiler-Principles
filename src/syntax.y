@@ -17,10 +17,71 @@ Node *root = NULL;
 %start Program
 %%
 
-/* Program 结点无子结点：nodeLine() 返回 0 → 判为 ε → 不打印，
- * 所以空文件依然静默。 */
 Program
-  : /* empty */   { root = newNode("Program", 0); }
+  : ExtDefList                  { root = newNode("Program", 1, $1); }
+  ;
+
+ExtDefList
+  : ExtDef ExtDefList           { $$ = newNode("ExtDefList", 2, $1, $2); }
+  | /* empty */                 { $$ = newNode("ExtDefList", 0); }
+  ;
+
+ExtDef
+  : Specifier ExtDecList SEMI   { $$ = newNode("ExtDef", 3, $1, $2, $3); }
+  | Specifier SEMI              { $$ = newNode("ExtDef", 2, $1, $2); }
+  | Specifier FunDec CompSt     { $$ = newNode("ExtDef", 3, $1, $2, $3); }
+  ;
+
+ExtDecList
+  : VarDec                      { $$ = newNode("ExtDecList", 1, $1); }
+  | VarDec COMMA ExtDecList     { $$ = newNode("ExtDecList", 3, $1, $2, $3); }
+  ;
+
+Specifier
+  : TYPE                        { $$ = newNode("Specifier", 1, $1); }
+  | StructSpecifier             { $$ = newNode("Specifier", 1, $1); }
+  ;
+
+StructSpecifier
+  : STRUCT OptTag LC DefList RC { $$ = newNode("StructSpecifier", 5, $1, $2, $3, $4, $5); }
+  | STRUCT Tag                  { $$ = newNode("StructSpecifier", 2, $1, $2); }
+  ;
+
+OptTag
+  : ID                          { $$ = newNode("OptTag", 1, $1); }
+  | /* empty */                 { $$ = newNode("OptTag", 0); }
+  ;
+
+Tag
+  : ID                          { $$ = newNode("Tag", 1, $1); }
+  ;
+
+VarDec
+  : ID                          { $$ = newNode("VarDec", 1, $1); }
+  | VarDec LB INT RB            { $$ = newNode("VarDec", 4, $1, $2, $3, $4); }
+  ;
+
+DecList
+  : Dec                         { $$ = newNode("DecList", 1, $1); }
+  | Dec COMMA DecList           { $$ = newNode("DecList", 3, $1, $2, $3); }
+  ;
+
+Dec
+  : VarDec                      { $$ = newNode("Dec", 1, $1); }
+  ;
+
+/* ── 以下三条本任务先占位，Task 5 补全 ── */
+
+DefList
+  : /* empty */                 { $$ = newNode("DefList", 0); }
+  ;
+
+FunDec
+  : ID LP RP                    { $$ = newNode("FunDec", 3, $1, $2, $3); }
+  ;
+
+CompSt
+  : LC RC                       { $$ = newNode("CompSt", 2, $1, $2); }
   ;
 
 %%

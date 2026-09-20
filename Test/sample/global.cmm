@@ -1,0 +1,7 @@
+int global1, global2;
+int global3;
+struct Complex
+{
+    float real, image;
+};
+int;

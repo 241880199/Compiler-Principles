@@ -1,0 +1,50 @@
+Program (1)
+  ExtDefList (1)
+    ExtDef (1)
+      Specifier (1)
+        TYPE: int
+      ExtDecList (1)
+        VarDec (1)
+          ID: global1
+        COMMA
+        ExtDecList (1)
+          VarDec (1)
+            ID: global2
+      SEMI
+    ExtDefList (2)
+      ExtDef (2)
+        Specifier (2)
+          TYPE: int
+        ExtDecList (2)
+          VarDec (2)
+            ID: global3
+        SEMI
+      ExtDefList (3)
+        ExtDef (3)
+          Specifier (3)
+            StructSpecifier (3)
+              STRUCT
+              OptTag (3)
+                ID: Complex
+              LC
+              DefList (5)
+                Def (5)
+                  Specifier (5)
+                    TYPE: float
+                  DecList (5)
+                    Dec (5)
+                      VarDec (5)
+                        ID: real
+                    COMMA
+                    DecList (5)
+                      Dec (5)
+                        VarDec (5)
+                          ID: image
+                  SEMI
+              RC
+          SEMI
+        ExtDefList (7)
+          ExtDef (7)
+            Specifier (7)
+              TYPE: int
+            SEMI
