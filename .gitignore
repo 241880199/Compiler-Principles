@@ -16,3 +16,6 @@ syntax.output
 *~
 .vscode/
 .idea/
+
+# SDD 进度台账（临时工作文件）
+.superpowers/
