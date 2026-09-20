@@ -372,19 +372,43 @@ ID 'int' at yylineno=7           ← 第 7 行，正确
 `LP RP LB RB DOT` 无需参与冲突消解（`LP Exp RP`、`Exp LB Exp RB`、`Exp DOT ID`
 均无歧义），故**不声明**，避免引入误导性的优先级。
 
-### 6.2.1 预期内的良性冲突（**不要试图消除**）
+### 6.2.1 冲突的预期（**实测修正版**）
 
-以下冲突 Bison 会报告，但**默认的"移进"恰好就是正确答案**，干预反而会引入错误。
-实现时以这份清单为准，凡是**不在此列**的新冲突才需要处理：
+> ⚠️ **本节曾写错，已按实测更正。** 原稿断言"以下三处 Bison 会报 shift/reduce 冲突，
+> 默认移进恰好正确"。实测（bison 3.8.2，Task 4 阶段）：**`grep -c conflict syntax.output`
+> 的结果是 0**，三处里有两处根本没有被报成冲突。原判断是按 SLR 直觉推演的，而 Bison
+> 生成的是 **LALR(1)**，前瞻集能把它们直接分开。
 
-| # | 冲突位置 | 看什么 token | Bison 默认 | 为何正确 |
-|---|---|---|---|---|
-| 1 | `VarDec : ID .` vs `FunDec : ID . LP …` | `LP` | 移进 → FunDec | `int f() {}` 是函数；`int x` 后跟 `(` 不可能是变量 |
-| 2 | `Exp : ID .` vs `Exp : ID . LP …` | `LP` | 移进 → 函数调用 | `f(x)` 是调用；`x` 后跟 `(` 不可能是变量引用 |
-| 3 | `IF LP Exp RP Stmt .` vs `. ELSE Stmt` | `ELSE` | 移进 → else 就近匹配 | 这正是 C 语言的悬空 else 语义 |
+**实测观察**（`syntax.output` state 13）：
 
-这三处冲突**必须在报告/注释里写明是已知且正确的**，否则后续调 `.output` 时容易被
-误导去"修"它们。
+```
+State 13
+
+   16 VarDec: ID •
+   19 FunDec: ID • LP RP
+
+    LP  shift, and go to state 19
+
+    $default  reduce using rule 16 (VarDec)
+```
+
+`VarDec : ID •` 与 `FunDec : ID • LP RP` 可以并存而**不构成冲突**，因为
+`LP ∉ Follow(VarDec)` —— 两者的前瞻集不相交，遇 `LP` 只有移进一种选择。同理
+`OptTag : ID •` / `Tag : ID •` 由 `LC` 与否区分开。
+
+**所以正确的预期是**：
+
+| 位置 | 是否报冲突 | 说明 |
+|---|---|---|
+| `VarDec : ID .` vs `FunDec : ID . LP …` | **否** | `LP ∉ Follow(VarDec)`，LALR 前瞻集已分开 |
+| `Exp : ID .` vs `Exp : ID . LP …` | **否** | 同理，`LP ∉ Follow(Exp)` |
+| `IF LP Exp RP Stmt .` vs `. ELSE Stmt` | **是**（悬空 else） | `ELSE ∈ Follow(Stmt)`，两者前瞻集确实相交，这是**唯一**的真实冲突；Bison 默认移进 = else 就近匹配，正是 C 语义，**保持默认即可** |
+
+**实现时的验收标准**：`syntax.output` 中出现的冲突应当**只有悬空 else 一处**（且它出现
+的前提是 `Stmt`/`IF` 产生式已就位）。**凡出现上述两处"看似该冲突"的 state，说明前瞻集
+没能分开——那是真问题，要查文法是否有别的错误，而不是去加优先级掩盖。**
+
+反过来，凡是**清单外**的新冲突才需要处理。不要为了"消到 0 个冲突"而加优先级。
 
 ### 6.3 错误恢复
 
