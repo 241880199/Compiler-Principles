@@ -1,0 +1,116 @@
+Program (1)
+  ExtDefList (1)
+    ExtDef (1)
+      Specifier (1)
+        TYPE: int
+      FunDec (1)
+        ID: f
+        LP
+        VarList (1)
+          ParamDec (1)
+            Specifier (1)
+              TYPE: int
+            VarDec (1)
+              ID: x
+          COMMA
+          VarList (1)
+            ParamDec (1)
+              Specifier (1)
+                TYPE: float
+              VarDec (1)
+                VarDec (1)
+                  ID: y
+                LB
+                INT: 10
+                RB
+        RP
+      CompSt (2)
+        LC
+        DefList (3)
+          Def (3)
+            Specifier (3)
+              TYPE: int
+            DecList (3)
+              Dec (3)
+                VarDec (3)
+                  ID: a
+            SEMI
+        StmtList (4)
+          Stmt (4)
+            Exp (4)
+              Exp (4)
+                ID: a
+              ASSIGNOP
+              Exp (4)
+                INT: 1
+            SEMI
+          StmtList (5)
+            Stmt (5)
+              IF
+              LP
+              Exp (5)
+                ID: a
+              RP
+              Stmt (5)
+                Exp (5)
+                  Exp (5)
+                    ID: a
+                  ASSIGNOP
+                  Exp (5)
+                    INT: 2
+                SEMI
+            StmtList (6)
+              Stmt (6)
+                IF
+                LP
+                Exp (6)
+                  ID: a
+                RP
+                Stmt (6)
+                  Exp (6)
+                    Exp (6)
+                      ID: a
+                    ASSIGNOP
+                    Exp (6)
+                      INT: 3
+                  SEMI
+                ELSE
+                Stmt (6)
+                  Exp (6)
+                    Exp (6)
+                      ID: a
+                    ASSIGNOP
+                    Exp (6)
+                      INT: 4
+                  SEMI
+              StmtList (7)
+                Stmt (7)
+                  WHILE
+                  LP
+                  Exp (7)
+                    ID: a
+                  RP
+                  Stmt (7)
+                    CompSt (7)
+                      LC
+                      StmtList (7)
+                        Stmt (7)
+                          Exp (7)
+                            Exp (7)
+                              ID: a
+                            ASSIGNOP
+                            Exp (7)
+                              Exp (7)
+                                ID: a
+                              MINUS
+                              Exp (7)
+                                INT: 1
+                          SEMI
+                      RC
+                StmtList (8)
+                  Stmt (8)
+                    RETURN
+                    Exp (8)
+                      ID: a
+                    SEMI
+        RC
