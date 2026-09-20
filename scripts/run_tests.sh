@@ -12,7 +12,8 @@ fi
 pass=0
 fail=0
 tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
+err=$(mktemp)
+trap 'rm -f "$tmp" "$err"' EXIT
 
 for cmm in Test/sample/*.cmm Test/err/*.cmm; do
     [ -e "$cmm" ] || continue
@@ -23,12 +24,24 @@ for cmm in Test/sample/*.cmm Test/err/*.cmm; do
         continue
     fi
 
-    ./parser "$cmm" > "$tmp" 2>&1
+    # stderr **单独**捕获，不并进比对的 stdout。
+    # 若写成 `> "$tmp" 2>&1`，把 reportError 改成 fprintf(stderr, ...) 仍然全绿 ——
+    # 而要求书 2.1.3 要求错误提示信息输出到**标准输出**，判分脚本读的是 stdout。
+    # 合并流会让这条规范悄悄失效，故必须分开断言。
+    ./parser "$cmm" > "$tmp" 2> "$err"
     status=$?
     # parser 恒返回 0（要求书未规定退出码），非 0 一定是异常。
     # 段错误会留下空输出，不查状态码就会与"正确地什么都不打印"混淆。
     if [ "$status" -ne 0 ]; then
         echo "FAIL  $cmm  （parser 退出码 $status）"
+        fail=$((fail + 1))
+        continue
+    fi
+
+    # 非空即判 FAIL：标准错误上不该有任何输出。
+    if [ -s "$err" ]; then
+        echo "FAIL  $cmm  （stderr 非空 —— 要求书 2.1.3 要求输出到标准输出）"
+        sed 's/^/      /' "$err" | head -10
         fail=$((fail + 1))
         continue
     fi

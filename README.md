@@ -85,19 +85,23 @@ make clean && make
 make test       # 跑 Test/sample 与 Test/err 下全部用例，与同名 .exp 逐字节比对
 ```
 
-预期输出以 `通过 22 个，失败 0 个` 结尾。
+预期输出以 `通过 27 个，失败 0 个` 结尾。
 
-`make test` 除比对用例之外还做两条断言，两条都不可省：
+`make test` 除比对用例之外还做三条断言，三条都不可省：
 
 1. **冲突数恰好 1**（`syntax.output` 中恰有 1 个 `State N conflicts: 1 shift/reduce`）。
    这是悬空 else，Bison 默认移进即 C 语义，保持默认。此断言是防文法退化的**哨兵**：
    实测把 `%left LB DOT` 删掉后，LR 动作表 `yypact/yydefact/yytable/yycheck/...`
-   **逐字节完全不变**，全部 22 个用例照过，**只有冲突计数**（1 → 11 个 state、
+   **逐字节完全不变**，全部用例照过，**只有冲突计数**（1 → 11 个 state、
    21 处 shift/reduce）能发现它。
 2. **`Test/err/crlf.cmm` 必须真含 CR**。该用例的全部价值在 `\r` 上（验证空白规则
    `[ \t\r]+` 能吃掉 CRLF）。`.gitattributes` 用 `-text` 让它在索引里保留 CRLF，
    但那只保护"入索引的那一刻"；若有人就地把它改写成 LF，全部用例照过、防线静默
    消失，故在运行期再断言一次。
+3. **parser 的 stderr 必须为空**。脚本把 stdout 与 stderr **分别**重定向：stdout 用于
+   比对 `.exp`，stderr 非空即判 FAIL。此前两者合并（`> "$tmp" 2>&1`），把错误信息
+   改成写 stderr 仍然全绿，而要求书 2.1.3 要求输出到**标准输出**（判分脚本读 stdout）
+   —— 合并流会让这条规范悄悄失效。
 
 另有两条单测目标（不在 `make test` 范围内）：
 

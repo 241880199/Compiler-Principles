@@ -10,7 +10,10 @@ parser: $(OBJS) syntax.tab.o lex.yy.o
 	$(CC) -o $@ $^ -lfl
 	cp -f parser cc
 
-syntax.tab.c: src/syntax.y
+# 两个产物同一条规则生成（`bison -d` 一次写出 .c 与 .h）。
+# 只写 `syntax.tab.c: src/syntax.y` 是不够的：`syntax.tab.h` 被手删后 make 并不知道
+# 该重新生成它，于是 lex.yy.o 的编译直接 `fatal error: syntax.tab.h: No such file`。
+syntax.tab.c syntax.tab.h: src/syntax.y
 	$(BISON) -o syntax.tab.c -d -v src/syntax.y
 
 # flex 需要 syntax.tab.h，故依赖 syntax.tab.c（bison -d 会一并生成该头文件）
@@ -20,7 +23,9 @@ lex.yy.c: src/lexical.l syntax.tab.c
 syntax.tab.o: syntax.tab.c src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ syntax.tab.c
 
-lex.yy.o: lex.yy.c src/tree.h src/report.h
+# syntax.tab.h 必须显式列出：lex.yy.c 里 `#include "syntax.tab.h"`，
+# 只在语法头文件被删/被改而 .c 未重新生成时，缺这条依赖会得到编译失败。
+lex.yy.o: lex.yy.c syntax.tab.h src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ lex.yy.c
 
 %.o: %.c src/tree.h src/report.h
@@ -44,4 +49,5 @@ test: parser
 
 .PHONY: clean unit-test lexer-test test
 clean:
-	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output
+	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
+	      Test/unit/test_tree Test/unit/test_lexer

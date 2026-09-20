@@ -5,10 +5,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <string.h>
 #include "tree.h"
 #include "report.h"
 #include "syntax.tab.h"
+
+/* 数字词素的十进制展开缓冲区。**不能小**：`%f` 把 `0.5e103`（附录 A 列出的合法
+ * 形式）展开为 103 位整数 + 小数点 + 6 位小数 = 110 字符，64 字节的缓冲区会把值
+ * 静默截断成错值（`%f` 不产生 UB，只是结果错）。512 对 double 的 `%f` 全量展开绰绰有余。 */
+#define NUMBUF 512
 
 static int commentStart = 0;   /* 未闭合注释的起始行 */
 
@@ -28,7 +32,6 @@ static void errA(int line, const char *fmt, const char *arg) {
 %}
 
 DIGIT   [0-9]
-HEXA    [0-9a-fA-F]
 ALNUM   [0-9a-zA-Z_]
 FBASE   ({DIGIT}+\.{DIGIT}*|\.{DIGIT}+)
 
@@ -40,7 +43,13 @@ FBASE   ({DIGIT}+\.{DIGIT}*|\.{DIGIT}+)
 <COMMENT>"*/"           { BEGIN(INITIAL); }
 <COMMENT>\n             { }
 <COMMENT>.              { }
-<COMMENT><<EOF>>        { BEGIN(INITIAL); reportError('A', commentStart, "Unterminated comment"); return 0; }
+<COMMENT><<EOF>>        { BEGIN(INITIAL);
+                         /* 先记下 EOF 所在行再返回 0：否则 curTokenLine 仍停在最后一个
+                          * 真实词法单元上，语法分析器随后报出的 type B 会**倒指回一行
+                          * 合法代码**（要求书 2.1.3：错误类型和行号是唯一评分标准）。 */
+                         curTokenLine = yylineno;
+                         reportError('A', commentStart, "Unterminated comment");
+                         return 0; }
 
 "//"[^\n]*              { }
 
@@ -49,26 +58,26 @@ FBASE   ({DIGIT}+\.{DIGIT}*|\.{DIGIT}+)
         const char *p; int ok = 1;
         for (p = yytext + 2; *p; p++) if (!isxdigit((unsigned char)*p)) ok = 0;
         if (ok) {
-            char buf[64];
+            char buf[NUMBUF];
             snprintf(buf, sizeof buf, "%ld", strtol(yytext, NULL, 0));
             return emit(INT, "INT", buf);
         }
-        errA(yylineno, "Illegal hexadecimal number \"%s\"", yytext);
+        errA(yylineno, "Illegal hexadecimal number '%s'", yytext);
     }
 
 0{DIGIT}+               {
         const char *p; int ok = 1;
         for (p = yytext + 1; *p; p++) if (*p > '7') ok = 0;
         if (ok) {
-            char buf[64];
+            char buf[NUMBUF];
             snprintf(buf, sizeof buf, "%ld", strtol(yytext, NULL, 8));
             return emit(INT, "INT", buf);
         }
-        errA(yylineno, "Illegal octal number \"%s\"", yytext);
+        errA(yylineno, "Illegal octal number '%s'", yytext);
     }
 
 {FBASE}[eE][+-]?{DIGIT}+    {
-        char buf[64];
+        char buf[NUMBUF];
         snprintf(buf, sizeof buf, "%f", atof(yytext));
         return emit(FLOAT, "FLOAT", buf);
     }
@@ -77,13 +86,13 @@ FBASE   ({DIGIT}+\.{DIGIT}*|\.{DIGIT}+)
     }
 
 {DIGIT}+\.{DIGIT}+      {
-        char buf[64];
+        char buf[NUMBUF];
         snprintf(buf, sizeof buf, "%f", atof(yytext));
         return emit(FLOAT, "FLOAT", buf);
     }
 
 0|[1-9]{DIGIT}*         {
-        char buf[64];
+        char buf[NUMBUF];
         snprintf(buf, sizeof buf, "%ld", strtol(yytext, NULL, 0));
         return emit(INT, "INT", buf);
     }

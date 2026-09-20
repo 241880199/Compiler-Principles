@@ -66,8 +66,19 @@ WSL2 `Ubuntu-22.04`，工具链由 `scripts/setup_wsl_toolchain.sh` 安装：
 ### 2.3 构建说明
 
 `Makefile_ref`（助教提供）中的 `-ly` 在本机不存在 `liby`，且本项目自行定义
-`main` 与 `yyerror`，**不需要 `-ly`**，故从构建命令中去掉。保留 `-lfl`，同时在
-`lexical.l` 中声明 `%option noyywrap`，使链接不依赖 `libfl` 也能通过。
+`main` 与 `yyerror`，**不需要 `-ly`**，故从构建命令中去掉。
+
+`lexical.l` 中另声明 `%option noyywrap`，作用是让 flex 生成的扫描器**不再在文件末尾
+调用 `yywrap()`**。这样 `libfl` 就不再是链接的必要条件：实测不传 `-lfl` 也能链接成功，
+产物与传 `-lfl` 时字节数完全相同（65936）。
+
+链接命令里仍保留 `-lfl`：它在本项目中**已无实际作用**（`%option noyywrap` 已消掉了对
+`yywrap()` 的引用，`main` 也是本项目自己定义的），保留只是为了与助教给的参考
+`Makefile_ref` 保持接近，避免"少了一个 `-l`"引起不必要的疑问。
+
+> **历史措辞更正**：本节原写作"保留 `-lfl`……使链接不依赖 `libfl` 也能通过"，两句自相
+> 矛盾（既说保留 `-lfl`，又说目的在不依赖 libfl）。上面已改为分别说明"`%option noyywrap`
+> 做了什么"与"为什么仍然留着 `-lfl`"两件事。
 
 ---
 
@@ -156,11 +167,20 @@ static int nodeLine(const Node *n) {
 
 ### 4.2 接口
 
+与 `src/tree.h` 逐字一致（原稿的签名是错的，已按实际代码更正）：
+
 ```c
-Node *newNode(const char *name, int line, int nchild, ...);  /* 变参构造 */
+Node *newNode(const char *name, int nchild, ...);      /* 变参构造；**不接受行号** */
 Node *newToken(const char *name, int line, const char *lexeme);
-void  printTree(Node *root, int depth);                      /* 先序打印 */
+void  printTree(const Node *root);                     /* 先序打印；**不接受 depth** */
 ```
+
+两处与原稿的差异，各有原因：
+
+- `newNode` **没有 `line` 形参**。语法单元的行号一律由 §4.1 的 `nodeLine()` 在打印时推导
+  （`newNode` 把 `line` 固定写成 0），从签名上就杜绝了"某个 action 忘了传行号"。
+- `printTree` **没有 `depth` 形参**。缩进是递归深度，由内部静态函数
+  `printNode(const Node *, int depth)` 持有；对外只需给一个根结点。
 
 `printTree` 的规则（对应要求书 2.1.3）：
 
@@ -173,7 +193,8 @@ void  printTree(Node *root, int depth);                      /* 先序打印 */
 | 词法单元 TYPE | `<缩进>TYPE: <int\|float>` |
 | 词法单元 INT / FLOAT | `<缩进>INT: <十进制值>` |
 
-缩进 = `depth * 2` 个空格，根结点 depth = 0。
+缩进 = `depth * 2` 个空格，根结点 depth = 0（`depth` 是内部递归函数 `printNode` 的参数，
+不是对外接口的一部分，见上）。
 
 **ε 判定的实现方式**：`kind == NODE_GRAMMAR && nodeLine(n) == 0` 即为 ε 结点，跳过
 （判定依据见 §4.1）。
@@ -505,7 +526,15 @@ CompSt : ... | error RC        /* 块层兜底 */
   `IF LP Exp RP . Stmt` 后移进 `error`，在行尾 `;` 同步，**恰好报 1 条**；
   样例 6 嵌套注释 —— 第 8 行残留的 `*/` 报 1 条并吞掉第 9 行，**这里只报 1 条才是
   正确的**，多报第 9 行的错反而与样例不符。
-- `CompSt → error RC`：花括号失配时在 `}` 处同步的兜底出口。
+- `CompSt → error RC`：块层兜底，在 `}` 处同步。
+  **曾有一轮整分支审查怀疑它"无贡献"**（21 组差分输入在同有/同无本产生式时输出完全
+  相同，冲突数也不变），**该怀疑已被实测推翻** —— 重新做差分实验后找到了能钉住它的
+  输入：**块内出错、且错误点与 `}` 之间没有 `;` 可同步时，只有它能让分析就地复原到
+  Program 层**，使 `}` 之后的兄弟定义继续被检查；只靠 `Stmt → error SEMI` 则要
+  一路丢弃到下一个 `;`（常常直到文件尾），后续错误全部丢失。
+  固定该行为的用例是 `Test/err/block_resync.cmm`（实测：删掉本产生式后该用例立刻变红）。
+
+- 顶层（`ExtDef` 层）**没有** `error` 出口，见下方已知限制。
 
 #### 已试并否决的备选（实测数据）
 
@@ -517,7 +546,26 @@ CompSt : ... | error RC        /* 块层兜底 */
 
 #### 已知限制（明知的取舍，非静默缺陷）
 
-**局部变量定义处缺分号时，一个语句块内只能报出第一处。** 例如：
+**一、顶层错误会中止后续的语法分析（但词法错误仍会报出）。**
+
+顶层（`ExtDef` 层）无处移进 `error`，Bison 只能弹空栈并**中止**分析。中止意味着
+**再也不会调用 `yylex`**，因此文件剩余部分的**词法**错误会整片丢失 —— 这是本次
+整分支审查发现并修掉的真实缺陷（Important I2）。修法是**不动文法**（动 `error`
+产生式的位置会改变冲突数），改在 `src/main.c`：`yyparse()` 返回后若 `hasError()`，
+继续调 `yylex()` 到返回 0，把文件扫完。
+
+```
+$ ./parser /tmp/fx/i2_a.cmm        # int a = 1;  /  int b = ~2;
+Error type B at Line 1: Syntax error.
+Error type A at Line 2: Mysterious character "~".
+```
+
+**仍未解决的部分**：中止之后**语法**错误依旧不会被报出（`~` 之后的 `2;` 只是被
+丢弃，不会产生第二条 B）。要连带修复需要给 `ExtDef` 层加 `error` 出口，实测会引入
+新冲突（冲突数必须保持 1，见 §6.2.1），代价大于收益，故明确保留。
+
+
+**二、局部变量定义处缺分号时，一个语句块内只能报出第一处。** 例如：
 
 ```
 int main() {
@@ -528,10 +576,28 @@ int main() {
 }
 ```
 
-实测只报行 4。因为缺分号的是 **Def 层**错误，而 `CompSt → LC . DefList StmtList RC`
+实测**只报行 3**（原稿写作"行 4"，是错的；行号取的是**触发错误的那个先行词法单元**
+`int`（行 3）所在行，而不是"缺分号的那一行"行 2 —— 与 `Test/err/multi_errors.exp`
+的行号口径一致）：
+
+```
+$ ./parser /tmp/doc/b.cmm        # 输入即上方代码块
+Error type B at Line 3: Syntax error.
+```
+
+因为缺分号的是 **Def 层**错误，而 `CompSt → LC . DefList StmtList RC`
 状态的闭包里**没有** `error` 出口（`StmtList` 在 `DefList` **之后**，不在其闭包中），
 Bison 只能一路弹到 `ExtDef → Specifier FunDec . CompSt`，在函数末尾的 `}` 处同步 ——
-块内后续错误全部被丢弃。
+**块内**后续错误全部被丢弃。
+
+**限制的边界（实测）**：同步点是函数末尾的 `}`，所以丢弃只发生在**该函数体内部**；
+`}` 之后的兄弟定义仍会被正常解析和检查。两个函数各缺一处分号时两处都会被报出：
+
+```
+$ ./parser /tmp/doc/c.cmm
+Error type B at Line 4: Syntax error.
+Error type B at Line 9: Syntax error.
+```
 
 **取舍依据**：要求书只演示了一处多处错误的样例（样例 2），那是语句层错误，我们**已
 完全覆盖**。补 `Def : error SEMI` 能覆盖上述情形，代价是冲突数 1→3 且引入一个真实的
@@ -574,6 +640,77 @@ Error type A at Line 4: Mysterious character "~".
 用一个全局 `errorOccurred` 标志：`yyerror` 与词法错误处理函数置位。`main` 在
 `yyparse()` 返回后检查该标志——置位则什么都不打印（错误已在过程中逐条输出），
 未置位才调用 `printTree`。
+
+### 7.4 错误报告的三处修正（整分支最终审查，实测）
+
+以下三处在开发期被漏掉，均由整分支审查发现。**共同的根因是：三条修正的行为都在
+`parser` 的端到端输出里，但当时的用例集没有覆盖到它们**——非法数字只被词法单测
+（`Test/unit/test_lexer` 直接调 `yylex()`）覆盖，看不见语法层的下游噪声；顶层中止
+与未闭合注释的行号则完全没有用例。现已各补端到端用例。
+
+#### (1) 同行 type B 是非法数字的下游噪声，必须抑制
+
+数字规则（`0[xX]{ALNUM}+` / `0{DIGIT}+` / `{FBASE}[eE][+-]?`）发现非法数字后**只报
+type A、不返回词法单元**，语法分析器于是看到 `int i = ;`，在同一行再报一条 type B。
+
+修复在 `src/report.c`：记住最近一次 type A 的行号 `lastALine`，`reportError` 收到
+`'B'` 且行号与之相同时**只置 `errorFlag`、不打印**。输入文件保证同一行不出现多个
+错误（要求书 2.1.3），故同行的 B 必然是 A 的下游噪声；**只在同一行**抑制，A 在行 N、
+B 在行 N+1 时不受影响。
+
+```
+$ ./parser Test/sample/illegal_oct.cmm      # 官方选做样例 2
+Error type A at Line 3: Illegal octal number '09'.
+Error type A at Line 4: Illegal hexadecimal number '0x3G'.
+
+$ ./parser Test/sample/illegal_exp.cmm      # 官方选做样例 4
+Error type A at Line 3: Illegal floating point number "1.05e".
+```
+
+> **说明文字与官方 PDF 的关系**：PDF 选做样例 2 用的是**单引号**（`'09'` / `'0x3G'`），
+> 选做样例 4 与必做样例 1 用的是**双引号**（`"1.05e"` / `"~"`）。本实现按 PDF 逐字对齐，
+> 故这两条用单引号、其余用双引号。要求书 2.1.3 明说"说明文字的内容没有具体要求"，
+> 只有**错误类型和行号**参与评分。
+
+#### (2) 顶层语法错误会让文件剩余部分的**词法**错误整片丢失
+
+见 §6.3 已知限制一。修复在 `src/main.c`（`yyparse()` 返回后把 `yylex()` 抽干）。
+
+```
+$ ./parser /tmp/fx/i2_a.cmm        # int a = 1;  /  int b = ~2;
+Error type B at Line 1: Syntax error.
+Error type A at Line 2: Mysterious character "~".
+
+$ ./parser /tmp/fx/i2_b.cmm        # int main(){}  /  int a = 1;  /  int b = ~2;
+Error type B at Line 2: Syntax error.
+Error type A at Line 3: Mysterious character "~".
+```
+
+#### (3) 未闭合注释处的 type B 曾倒指回合法代码
+
+`<COMMENT><<EOF>>` 的动作原本在 `return 0` 前没有更新 `curTokenLine`，它仍停在最后
+一个真实词法单元上，于是这条 B 指到了**上一行完全合法的代码**。修复：`return 0` 前
+加 `curTokenLine = yylineno;`，让这条 B 指向 EOF。
+
+```
+$ ./parser Test/err/unterm_inbody.cmm       # 注释在函数体内
+Error type A at Line 4: Unterminated comment.
+Error type B at Line 5: Syntax error.       # 修复前是 "at Line 3"（那行是 int a;，合法）
+```
+
+#### (4) `FLOAT` 值在 63 字符处被静默截断
+
+数字的词素转十进制缓冲区原为 `char buf[64]`，而 `%f` 把 `0.5e103`（附录 A 列出的
+合法形式）展开成 **110** 个字符（103 位整数 + `.` + 6 位小数），于是打出一个被截断的
+**错值**。已把缓冲区统一改为 `NUMBUF`（512）。`%f` 不写越界，只是结果错，故原缺陷
+没有 UB、也没有崩栈之类的旁证，只能靠比对数值本身发现。
+
+```
+$ ./parser /tmp/fx/i4.cmm | grep FLOAT
+                  FLOAT: 5000000000000000009578375428673343681079775636325960055764017572996896621019943779806180725540901617664.000000
+```
+
+与 `python3 -c 'print("%.6f" % 0.5e103)'` 的输出**逐字相同**。
 
 ---
 
@@ -626,11 +763,29 @@ Compiler-Principles/
    - `1.05e+`、`.5E03`、`43.e-4`（附录 A 补充说明里给的合法指数形式）
    - 一个文件内多个错误、跨多行的多个错误
    - 空文件、只有注释的文件
+   - **顶层语法错误之后仍有词法错误**（`Test/err/drain_after_toplevel.cmm`；钉住 §7.4(2)
+     的抽干循环 —— 语法分析中止后仍要把文件扫完）
+   - **函数体内未闭合注释**（`Test/err/unterm_inbody.cmm`；钉住 §7.4(3) 的 B 行号）
+   - **块层 `error RC` 复位**（`Test/err/block_resync.cmm`；钉住 §6.3 的 `CompSt : error RC`）
+3. **要求书样例的端到端副本**（`Test/sample/illegal_oct.cmm`、`illegal_exp.cmm`）：
+   选做样例 2 / 样例 4 此前只被**词法单测**覆盖（直接调 `yylex()`，看不见语法层），
+   于是"非法数字连报一条同行 type B"的缺陷潜伏至今。这两个用例走完整 `parser`，
+   期望输出逐字取自 PDF（见 §7.4(1)）。
 
 ### 9.2 执行
 
-`scripts/run_tests.sh`：遍历 `Test/**/*.cmm`，比对同名 `.exp`，输出 diff 与汇总。
+`scripts/run_tests.sh`：遍历 `Test/sample/*.cmm` 与 `Test/err/*.cmm`（`Test/unit/` 由
+`unit-test` / `lexer-test` 各自负责），比对同名 `.exp`，输出 diff 与汇总。
 全部用例在 WSL 中运行。
+
+脚本除了比对 stdout，还断言两件"比对本身看不见"的事：
+
+- **stderr 必须为空**。此前用 `> "$tmp" 2>&1`，把错误信息改成写 stderr 仍然全绿，
+  而要求书 2.1.3 要求输出到**标准输出**（判分脚本读 stdout）。现已改为 stdout 与
+  stderr 分别重定向，stderr 非空即判 FAIL。
+- **`syntax.output` 里恰好 1 个冲突 state 且为 `1 shift/reduce`**（悬空 else）。
+  这条哨兵不可省：实测有无 `%left LB DOT` 的 LR 动作表**完全相同**，全部 `.exp` 比对
+  都察觉不到它被误删，只有冲突计数能发现。
 
 ---
 
