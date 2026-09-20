@@ -40,7 +40,7 @@ FBASE   ({DIGIT}+\.{DIGIT}*|\.{DIGIT}+)
 <COMMENT>"*/"           { BEGIN(INITIAL); }
 <COMMENT>\n             { }
 <COMMENT>.              { }
-<COMMENT><<EOF>>        { reportError('A', commentStart, "Unterminated comment"); return 0; }
+<COMMENT><<EOF>>        { BEGIN(INITIAL); reportError('A', commentStart, "Unterminated comment"); return 0; }
 
 "//"[^\n]*              { }
 

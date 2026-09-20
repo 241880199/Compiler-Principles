@@ -32,7 +32,8 @@ Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h
 unit-test: Test/unit/test_tree
 	@bash -o pipefail -c './Test/unit/test_tree | diff -u Test/unit/tree_expected.txt -' && echo "PASS tree"
 
-Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c
+Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c \
+                      src/tree.h src/report.h
 	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c -lfl
 
 lexer-test: Test/unit/test_lexer
