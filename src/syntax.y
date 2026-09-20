@@ -70,10 +70,17 @@ Dec
   : VarDec                      { $$ = newNode("Dec", 1, $1); }
   ;
 
-/* ── 以下三条本任务先占位，Task 5 补全 ── */
+/* ── 本任务必须含 DefList/Def：结构体成员定义 `float real, image;` 走的正是
+      StructSpecifier → LC DefList RC，若 DefList 只有 ε 则结构体定义无法解析。
+      FunDec / CompSt 仍留占位，Task 5 补全。 ── */
 
 DefList
-  : /* empty */                 { $$ = newNode("DefList", 0); }
+  : Def DefList                 { $$ = newNode("DefList", 2, $1, $2); }
+  | /* empty */                 { $$ = newNode("DefList", 0); }
+  ;
+
+Def
+  : Specifier DecList SEMI      { $$ = newNode("Def", 3, $1, $2, $3); }
   ;
 
 FunDec
