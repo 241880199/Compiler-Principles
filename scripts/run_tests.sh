@@ -56,9 +56,33 @@ for cmm in Test/sample/*.cmm Test/err/*.cmm; do
 done
 
 # ── 冲突数断言 ────────────────────────────────────────────────
-# 唯一允许的冲突是悬空 else（设计文档 §6.2.1 / §6.2.2）。
+# **期望恰好 3 个冲突 state，且每个都是「1 shift/reduce」。** 归属（实测，粘自
+# syntax.output，bison 3.8.2 与 3.0.4 两版一致）：
+#
+#   ① State 26  `CompSt: LC • DefList StmtList RC`
+#        error  shift, and go to state 28
+#        error  [reduce using rule 24 (DefList)]      ← 冲突
+#   ② State 31  `DefList: Def • DefList`
+#        error  shift, and go to state 28
+#        error  [reduce using rule 24 (DefList)]      ← 冲突
+#   ③ State 114 `Stmt: IF LP Exp RP Stmt •` / `| IF LP Exp RP Stmt • ELSE Stmt`
+#        ← 悬空 else，Bison 默认移进即 C 语义
+#
+# ①② 都是 `Def : error`（错误恢复同步点之四，见 src/syntax.y）引起的同一件事：
+# **`DefList` 可空**，于是"看 `error` 时移进"与"按 `DefList → ε` 归约"不可兼得。
+# 它们只出现在 `CompSt` 一路（`error` 能跟在 `DefList` 之后，因为 `StmtList` 可
+# 以 `error` 开头）；`StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）
+# **不冲突** —— 结构体成员表后面只能跟 `RC`，`error` 根本不进它的前瞻集，
+# 那里 `error` 是个无歧义的移进动作。故"两处"指的是 State 26/31，**不是**
+# `StructSpecifier`。带同步符的 `Def : error SEMI` 引入的是**同样这 2 个**冲突
+# （冲突由 `error` 符号本身引起，与后面跟不跟同步符无关），所以"不带同步符"是
+# 纯收益，未额外付冲突代价。
+#
 # 这条断言不可省：实测有无 %left LB DOT 的 LR 动作表**完全相同**，
 # 所有 .exp 比对都察觉不到它被误删，只有这个计数能发现。
+# 哨兵的**语义不变**（冲突数一变就报警，不区分"变好"还是"变坏"），
+# 只是期望值随 `Def : error` 的采纳由 1 改为 3。任何变化 —— 多一个 state、
+# 某个 state 变成 reduce/reduce、或悬空 else 消失 —— 都会红。
 # ── `crlf.cmm` 必须真的含 CR ──────────────────────────────────
 # `.gitattributes` 的 `-text` 只保护**入索引的那一刻**。若有人就地把它
 # 重写成 LF，索引 blob 回到 29 字节、全部用例照过、防线再次静默消失 ——
@@ -93,12 +117,12 @@ if [ -f syntax.output ]; then
     # 锚定同时消除了本断言唯一依赖 bison 版本的地方
     # （state 编号大小写用 [Ss] 兼容 3.0.4）。
     n=$(grep -cE '^[Ss]tate [0-9]+ conflicts:' syntax.output)
-    if [ "$n" -ne 1 ]; then
-        echo "FAIL  期望恰好 1 个冲突 state（悬空 else），实测 $n 个"
+    if [ "$n" -ne 3 ]; then
+        echo "FAIL  期望恰好 3 个冲突 state（悬空 else 1 + Def : error 2），实测 $n 个"
         grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
         fail=$((fail + 1))
-    elif ! grep -qE '^[Ss]tate [0-9]+ conflicts: 1 shift/reduce$' syntax.output; then
-        echo "FAIL  唯一的冲突 state 不是「1 shift/reduce」"
+    elif [ "$(grep -cE '^[Ss]tate [0-9]+ conflicts: 1 shift/reduce$' syntax.output)" -ne 3 ]; then
+        echo "FAIL  3 个冲突 state 并非每个都是「1 shift/reduce」"
         grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
         fail=$((fail + 1))
     fi
