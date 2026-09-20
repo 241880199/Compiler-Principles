@@ -17,6 +17,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     yyparse();
-    /* Task 2 在此处补上：if (!hasError()) printTree(root); */
+    if (!hasError()) printTree(root);
     return 0;
 }

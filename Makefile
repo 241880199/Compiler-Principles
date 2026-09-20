@@ -3,8 +3,7 @@ FLEX   = flex
 BISON  = bison
 CFLAGS = -std=c99 -Wall -g -Isrc
 
-# Task 2 会补上 src/tree.c
-SRCS   = src/main.c src/report.c
+SRCS   = src/main.c src/tree.c src/report.c
 OBJS   = $(SRCS:.c=.o)
 
 parser: $(OBJS) syntax.tab.o lex.yy.o
@@ -27,6 +26,12 @@ lex.yy.o: lex.yy.c src/tree.h src/report.h
 %.o: %.c src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-.PHONY: clean
+Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_tree.c src/tree.c
+
+unit-test: Test/unit/test_tree
+	@./Test/unit/test_tree | diff -u Test/unit/tree_expected.txt - && echo "PASS tree"
+
+.PHONY: clean unit-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output

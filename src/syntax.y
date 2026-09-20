@@ -17,10 +17,10 @@ Node *root = NULL;
 %start Program
 %%
 
-/* 本任务的 Program 动作只置 NULL —— newNode() 要到 Task 2 才实现。
- * Task 2 Step 7 会把它改成真正构造结点。 */
+/* Program 结点无子结点：nodeLine() 返回 0 → 判为 ε → 不打印，
+ * 所以空文件依然静默。 */
 Program
-  : /* empty */   { root = NULL; }
+  : /* empty */   { root = newNode("Program", 0); }
   ;
 
 %%
