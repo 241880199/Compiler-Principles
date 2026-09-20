@@ -18,10 +18,10 @@ syntax.tab.c: src/syntax.y
 lex.yy.c: src/lexical.l syntax.tab.c
 	$(FLEX) -o lex.yy.c src/lexical.l
 
-syntax.tab.o: syntax.tab.c
+syntax.tab.o: syntax.tab.c src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ syntax.tab.c
 
-lex.yy.o: lex.yy.c
+lex.yy.o: lex.yy.c src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ lex.yy.c
 
 %.o: %.c src/tree.h src/report.h
@@ -29,4 +29,4 @@ lex.yy.o: lex.yy.c
 
 .PHONY: clean
 clean:
-	rm -f parser cc *.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output
+	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output

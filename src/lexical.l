@@ -1,5 +1,6 @@
 %option yylineno
 %option noyywrap
+%option noinput nounput never-interactive
 %{
 #include <stdio.h>
 #include "tree.h"
