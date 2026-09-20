@@ -1,0 +1,20 @@
+# 本项目在 Windows 上编辑、在 WSL/Linux 下编译运行，所有文本文件一律用 LF。
+# 若放任 Git 在检出时转成 CRLF，会引发两类真实故障：
+#   1. scripts/*.sh 在 WSL 里执行时 bash 报 "\r: command not found"
+#   2. Test/*.cmm 里的 \r 被词法分析器视作未定义字符，导致每个测试文件都误报 type A
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.c         text eol=lf
+*.h         text eol=lf
+*.l         text eol=lf
+*.y         text eol=lf
+*.cmm       text eol=lf
+*.exp       text eol=lf
+*.md        text eol=lf
+Makefile    text eol=lf
+
+# 二进制文件不做行尾转换
+*.pdf       binary
+*.png       binary
+*.jpg       binary
