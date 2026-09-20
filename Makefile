@@ -30,7 +30,7 @@ Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h
 	$(CC) $(CFLAGS) -o $@ Test/unit/test_tree.c src/tree.c
 
 unit-test: Test/unit/test_tree
-	@./Test/unit/test_tree | diff -u Test/unit/tree_expected.txt - && echo "PASS tree"
+	@bash -o pipefail -c './Test/unit/test_tree | diff -u Test/unit/tree_expected.txt -' && echo "PASS tree"
 
 .PHONY: clean unit-test
 clean:

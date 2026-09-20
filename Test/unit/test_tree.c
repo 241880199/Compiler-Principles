@@ -40,5 +40,17 @@ int main(void) {
             newToken("FLOAT", 4, "0.000105"));
     printTree(t);
 
+    printf("===== 分隔 =====\n");
+
+    /* 树 5：同一子树内各词素的行号**互不相同** —— 钉住"取第一个词素的行号"
+       若实现取最后一个（或最大）行号，这里会打印出 Def (4) 而非 Def (1) */
+    t = newNode("Def", 3,
+            newNode("Specifier", 1, newToken("TYPE", 1, "int")),
+            newNode("DecList", 1,
+                newNode("Dec", 1,
+                    newToken("ID", 3, "x"))),
+            newToken("SEMI", 4, NULL));
+    printTree(t);
+
     return 0;
 }

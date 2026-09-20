@@ -19,3 +19,11 @@ DefList (3)
 Exp (4)
   INT: 83
   FLOAT: 0.000105
+===== 分隔 =====
+Def (1)
+  Specifier (1)
+    TYPE: int
+  DecList (3)
+    Dec (3)
+      ID: x
+  SEMI
