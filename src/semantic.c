@@ -22,10 +22,17 @@ static void semErr(int code, int line, const char *fmt, ...) {
     if (reportSemanticError(code, line, buf)) errorCount++;
 }
 
-/* 注：`isTok(n, name)`（判某个终结符的名字）在 Task 7 的定义侧**没有调用者**，
- * 而 `-Wall` 的 `-Wunused-function` 会把"定义了但没人用"的 static 函数报成警告
- * （"零 gcc 警告"是验收项），故这里不定义它 —— Task 8 加表达式分析时按需加上。
- * （brief 的代码块里带了它，但它不在 brief 自己列的 Produces 清单里。） */
+/* 判某个结点是不是名为 name 的**词法单元**。表达式的分派全靠它：18 种产生式里
+ * 有 5 种彼此只差"某个子结点是终结符还是表达式"（`LP Exp RP`/`ID LP RP`/`Exp DOT ID`
+ * 都是 3 个子结点，`ID LP Args RP`/`Exp LB Exp RB` 都是 4 个），故这个判定必须
+ * **只有一处**、名字必须写对。非词法单元（表达式等非终结符结点）一律返回 0 ——
+ * 于是它同时承担"child[i] 是不是终结符"这个判据，比各处手写 kind==NODE_TOKEN 不易漏。
+ *
+ * 注：它由本任务（Task 8）补上 —— Task 7 里没有调用者，定义出来会撞
+ * `-Wunused-function` 而违反"零 gcc 警告"（见提交 68035cb 的回填）。 */
+static int isTok(const Node *n, const char *name) {
+    return n && n->kind == NODE_TOKEN && n->name && strcmp(n->name, name) == 0;
+}
 
 /* ── 前置声明 ──────────────────────────────────────────────
  * 下面几个函数互相递归（analyzeSpecifier ↔ analyzeStructSpecifier ↔ analyzeFieldList、
@@ -39,6 +46,9 @@ static FieldList analyzeFieldDef(const Node *n, FieldList head);
 static void      analyzeDef(const Node *n);
 static void      analyzeDecList(const Node *n, Type base);
 static void      analyzeDec(const Node *n, Type base);
+/* 语句遍历（Task 8 的最小结构下潜，见 analyzeStmt 上方那段 ⚠️）与 CompSt 互相
+ * 递归：analyzeCompSt 要遍历函数体的语句、`Stmt : CompSt` 又要回到 analyzeCompSt。 */
+static void      analyzeCompSt(const Node *n, int freshScope);
 
 /* ── ExtDef 的四种形态（设计文档 §3.4）─────────────────────
  * 注意 `ExtDef : error SEMI` 的 child[0] 是 bison 的 error 符号，语义值未定义，
@@ -57,9 +67,338 @@ static ExtDefKind extdefKind(const Node *n) {
              ? ED_FUNC : ED_PROTO;
 }
 
-/* ── 声明（Task 8/9 填充）────────────────────────────────── */
-static Type analyzeExp(Node *n) { (void)n; return typeUnknown(); }
-static void analyzeStmtList(Node *n) { (void)n; }
+/* ══ 表达式分析（错误 1/2/5/6/7/9/10/11/12/13/14）════════════
+ *
+ * Exp 有 18 种产生式，而结点上只带非终结符名（§3.4 的取舍），故**只能**靠
+ * "子结点个数 + 子结点里词法单元的名字"分派。全项目只此一处做这种分派，
+ * 集中在 analyzeExp 里，不散进各分支。
+ *
+ * 贯穿全文的三条约定：
+ *   · 错误码与行号取法见设计文档 §7 的十九条规则表；
+ *   · **UNKNOWN 毒化**（决策 8）：名字查不到 ⇒ 该名字的类型记为 UNKNOWN，
+ *     `typeEqual(UNKNOWN, 任何)` 为真；各检查点遇到 UNKNOWN 操作数一律静默 ——
+ *     这是"只报较本质那个错误"的实现机制；
+ *   · 同一处多条候选按遍历顺序**留最先检出的那条**（决策 9），且同行只留一条。
+ */
+
+static int checkable(Type t) { return !typeIsUnknown(t); }   /* 毒化开关（决策 8）*/
+static int isIntT(Type t)    { return t->kind == TY_BASIC && t->u.basic == BT_INT; }
+static int isArith(Type t)   { return t->kind == TY_BASIC; } /* 假设 2：只有 int/float 能算术 */
+
+/* 消息里用的短文本。**消息内容不参与评分**（要求书明说"说明文字的内容没有具体要求"），
+ * 但注意 FLOAT/INT 的 lexeme 是**十进制展开值**而非源文本（实验一 lexical.l 的
+ * `%f` 展开），所以样例 12 的 `1.5` 会被渲染成 `1.500000`。这不影响判分，
+ * 也是设计文档 §11.3 要给官方样例另配 `.pairs` 的原因 —— **不要为了让它显示成
+ * `1.5` 去改 lexer**，那会动到实验一已验证的 lex.yy.c 行为。 */
+static const char *expText(const Node *e) {
+    static char buf[64];
+    if (e->nchild == 1 && e->child[0]->kind == NODE_TOKEN) {
+        const Node *t = e->child[0];
+        if (t->lexeme) return t->lexeme;
+        snprintf(buf, sizeof buf, "%s", t->name);
+        return buf;
+    }
+    return "expression";
+}
+
+/* 左值判据 —— 实验二指导书给的**语法层**简化（设计文档 §1.4）：
+ * 赋值号左边只能是 ID、Exp LB Exp RB、Exp DOT ID。故 `(a) = 1` 也报错误 6。 */
+static int isLvalueForm(const Node *e) {
+    if (e->kind != NODE_GRAMMAR) return 0;
+    if (e->nchild == 1 && isTok(e->child[0], "ID"))  return 1;
+    if (e->nchild == 3 && isTok(e->child[1], "DOT")) return 1;
+    if (e->nchild == 4 && isTok(e->child[1], "LB"))  return 1;
+    return 0;
+}
+
+static Type analyzeCall(const Node *n, int hasArgs);
+static Type analyzeSubscript(const Node *n);
+static Type analyzeFieldAccess(const Node *n);
+static Type analyzeAssign(const Node *n);
+static Type analyzeBinary(const Node *n);
+
+/* 分派：先按**子结点个数**，再按子结点里词法单元的名字。
+ *   nchild==1  Exp : ID | INT | FLOAT
+ *   nchild==2  Exp : MINUS Exp | NOT Exp
+ *   nchild==3  Exp : LP Exp RP | ID LP RP | Exp DOT ID | Exp ASSIGNOP Exp
+ *                    | Exp {AND,OR,RELOP,PLUS,MINUS,STAR,DIV} Exp
+ *   nchild==4  Exp : ID LP Args RP | Exp LB Exp RB               */
+static Type analyzeExp(Node *n) {
+    const Node *c0 = n->nchild > 0 ? n->child[0] : NULL;
+    const Node *c1 = n->nchild > 1 ? n->child[1] : NULL;
+
+    switch (n->nchild) {
+    case 1:                                        /* Exp : ID | INT | FLOAT */
+        if (isTok(c0, "INT"))   return typeBasic(BT_INT);
+        if (isTok(c0, "FLOAT")) return typeBasic(BT_FLOAT);
+        {
+            SymEntry *e = symLookup(c0->lexeme);   /* Exp : ID */
+            if (!e || e->kind == SYM_FUNC) {
+                /* 函数名出现在变量位置：要求书的 17 种里没有对应码，
+                 * 与"变量在使用时未定义"归为同类，报错误 1。 */
+                semErr(1, nodeLine(c0), "Undefined variable \"%s\"", c0->lexeme);
+                return typeUnknown();
+            }
+            return e->type;
+        }
+    case 2:                                        /* MINUS Exp | NOT Exp */
+        if (isTok(c0, "NOT")) {                    /* 假设 2：逻辑非只有 int 能做 */
+            Type t = analyzeExp(n->child[1]);
+            if (!checkable(t)) return typeUnknown();
+            if (!isIntT(t))
+                semErr(7, nodeLine(n), "Type mismatched for operands");
+            return typeBasic(BT_INT);
+        }
+        {                                          /* MINUS Exp（取负，属四则运算）*/
+            Type t = analyzeExp(n->child[1]);
+            if (!checkable(t)) return typeUnknown();
+            if (!isArith(t))
+                semErr(7, nodeLine(n), "Type mismatched for operands");
+            return t;
+        }
+    case 3:
+        if (isTok(c0, "LP"))                       /* LP Exp RP */
+            return analyzeExp(n->child[1]);
+        if (c0->kind == NODE_TOKEN)                /* ID LP RP */
+            return analyzeCall(n, /*hasArgs=*/0);
+        if (isTok(c1, "DOT"))                      /* Exp DOT ID */
+            return analyzeFieldAccess(n);
+        if (isTok(c1, "ASSIGNOP"))                 /* Exp ASSIGNOP Exp */
+            return analyzeAssign(n);
+        return analyzeBinary(n);                   /* 其余二元运算 */
+    case 4:
+        if (c0->kind == NODE_TOKEN)                /* ID LP Args RP */
+            return analyzeCall(n, /*hasArgs=*/1);
+        return analyzeSubscript(n);                /* Exp LB Exp RB */
+    }
+    return typeUnknown();
+}
+
+/* ── 赋值（错误 6 先于 5，设计文档 §7.1）──────────────────
+ * ⚠️ **"报 6 在分析子结点之前"必须显式钉住**：Test/lab2/dec09b_nonmono.cmm 的
+ * 判别力依赖这个完整顺序（先 6、再左子结点、再右操作数、最后 5 —— 三段可以报在
+ * L → M → L 三个非单调行号上）。若重构成"先分析子结点再判左值性"，那条端到端
+ * 用例会悄悄退化成新旧实现都绿。 */
+static Type analyzeAssign(const Node *n) {
+    Type l, r;
+    if (!isLvalueForm(n->child[0]))
+        semErr(6, nodeLine(n), "The left-hand side of an assignment must be a variable");
+    l = analyzeExp(n->child[0]);
+    r = analyzeExp(n->child[2]);
+    if (!typeEqual(l, r))
+        semErr(5, nodeLine(n), "Type mismatched for assignment");
+    return l;                                      /* UNKNOWN 会继续向上传播 */
+}
+
+/* ── 二元运算 ─────────────────────────────────────────────
+ * 三条规则都来自假设 1/2 与附录 A：
+ *   逻辑与/或（AND/OR）：两侧必须 int（假设 2 的"逻辑运算"）
+ *   关系（RELOP）：附录 A 把"关系表达式"与"逻辑与/逻辑或"**并列**，故它不是逻辑运算；
+ *                  受假设 1 约束 —— 两侧同为 int 或同为 float，不混。结果是 int
+ *                  （否则 `if (a<b)` 的条件就不是 int 了）。
+ *   四则（PLUS/MINUS/STAR/DIV）：两侧必须同为 int 或同为 float（假设 1、2）。 */
+static Type analyzeBinary(const Node *n) {
+    const char *o = n->child[1]->name;
+    Type l = analyzeExp(n->child[0]);
+    Type r = analyzeExp(n->child[2]);
+    int logical, relop;
+
+    if (!checkable(l) || !checkable(r)) return typeUnknown();   /* 毒化 */
+
+    logical = strcmp(o, "AND") == 0 || strcmp(o, "OR") == 0;
+    relop   = strcmp(o, "RELOP") == 0;
+
+    if (logical) {
+        if (!isIntT(l) || !isIntT(r))
+            semErr(7, nodeLine(n), "Type mismatched for operands");
+        return typeBasic(BT_INT);
+    }
+    if (relop) {
+        if (!isArith(l) || !isArith(r) || l->u.basic != r->u.basic)
+            semErr(7, nodeLine(n), "Type mismatched for operands");
+        return typeBasic(BT_INT);
+    }
+    /* 四则 */
+    if (!isArith(l) || !isArith(r) || l->u.basic != r->u.basic)
+        semErr(7, nodeLine(n), "Type mismatched for operands");
+    return isArith(l) ? l : typeUnknown();
+}
+
+/* ── 下标（错误 10 先于 12 且短路，设计文档 §7.1）────────── */
+static Type analyzeSubscript(const Node *n) {
+    Type base = analyzeExp(n->child[0]);
+    Type idx;
+
+    if (!checkable(base)) return typeUnknown();
+
+    if (base->kind != TY_ARRAY) {
+        semErr(10, nodeLine(n->child[0]), "\"%s\" is not an array", expText(n->child[0]));
+        return typeUnknown();                      /* 短路：不再分析下标、不报 12 */
+    }
+    idx = analyzeExp(n->child[2]);
+    if (!checkable(idx)) return typeUnknown();
+    /* **决策 6 的开关点**：下标必须是 int。放数组（如 a[b]、b 是数组）也报 12，
+     * 因为错误 12 是下标的专项规则、错误 7 是通则，专项优先。 */
+    if (!isIntT(idx)) {
+        semErr(12, nodeLine(n->child[2]), "\"%s\" is not an integer", expText(n->child[2]));
+        return typeUnknown();
+    }
+    return base->u.array.elem;
+}
+
+/* ── 结构体访域（错误 13 先于 14）───────────────────────── */
+static Type analyzeFieldAccess(const Node *n) {
+    Type base = analyzeExp(n->child[0]);
+    const Node *idNode = n->child[2];
+    FieldList f;
+
+    if (!checkable(base)) return typeUnknown();
+    if (base->kind != TY_STRUCTURE) {
+        semErr(13, nodeLine(n), "Illegal use of \".\"");
+        return typeUnknown();
+    }
+    f = typeField(base, idNode->lexeme);
+    if (!f) {
+        semErr(14, nodeLine(n), "Non-existent field \"%s\"", idNode->lexeme);
+        return typeUnknown();
+    }
+    return f->type;
+}
+
+/* ── 函数调用（错误 11 先于 2 先于 9，设计文档 §7.1）──────
+ * 收集实参类型。Args : Exp | Exp COMMA Args —— 左深链表，最左的实参在最外层。 */
+static Type expType(const Node *e) { return analyzeExp((Node *)e); }
+
+static Type *collectArgTypes(const Node *args, int *nOut) {
+    int cap = 4, n = 0;
+    Type *arr = xmalloc(sizeof(Type) * (size_t)cap);
+    while (args) {                                 /* Args : Exp | Exp COMMA Args */
+        if (n == cap) {
+            Type *bigger = xmalloc(sizeof(Type) * (size_t)cap * 2);
+            memcpy(bigger, arr, sizeof(Type) * (size_t)n);
+            free(arr);
+            arr = bigger;
+            cap *= 2;
+        }
+        arr[n++] = expType(args->child[0]);
+        if (args->nchild == 1) break;
+        args = args->child[2];
+    }
+    *nOut = n;
+    return arr;
+}
+
+/* "func(int, float)" 形式的签名文本（形参侧）。 */
+static void sigString(const SymEntry *e, const char *name, char *buf, int n) {
+    char one[128];
+    int i, off = 0;
+    off += snprintf(buf + off, (size_t)(n - off), "%s(", name);
+    for (i = 0; i < e->nparams; i++) {
+        typeToString(e->params[i], one, sizeof one);
+        off += snprintf(buf + off, (size_t)(n - off), "%s%s", i ? ", " : "", one);
+    }
+    snprintf(buf + off, (size_t)(n - off), ")");
+}
+
+static Type analyzeCall(const Node *n, int hasArgs) {
+    const Node *idNode = n->child[0];
+    const char *name = idNode->lexeme;
+    SymEntry *e = symLookup(name);
+    Type *args = NULL;
+    int nargs = 0, i, bad = 0;
+
+    if (hasArgs) args = collectArgTypes(n->child[2], &nargs);
+
+    if (!e) {
+        semErr(2, nodeLine(idNode), "Undefined function \"%s\"", name);
+        return typeUnknown();
+    }
+    if (e->kind != SYM_FUNC) {
+        /* 决策：名字存在但不是函数 ⇒ 错误 11（要求书样例 11 的 `i(10)` 只该出 11）。
+         * 在查"是否定义"之前 —— 普通变量本来就不需要"定义"，先判 2 会报错码。 */
+        semErr(11, nodeLine(idNode), "\"%s\" is not a function", name);
+        return typeUnknown();
+    }
+
+    if (nargs != e->nparams) {
+        bad = 1;
+    } else {
+        for (i = 0; i < nargs; i++) {
+            if (!checkable(args[i])) return e->type;   /* 毒化：无法判定，静默 */
+            if (!typeEqual(args[i], e->params[i])) bad = 1;
+        }
+    }
+
+    if (bad) {
+        /* ⚠️ **返回的是 e->type（函数返回类型），不是 UNKNOWN** —— 设计文档明确依赖
+         * 这一点：它让"实参不匹配 + 赋值类型也不匹配"能同时报出两条
+         * （`dec09b_nonmono.cmm` 那个非单调行号用例正是靠它）。别改成 UNKNOWN。 */
+        char s1[256], s2[256];
+        int off = 0;
+        sigString(e, name, s1, sizeof s1);
+        off += snprintf(s2 + off, sizeof s2 - (size_t)off, "(");
+        for (i = 0; i < nargs; i++) {
+            char one[128];
+            typeToString(args[i], one, sizeof one);
+            off += snprintf(s2 + off, sizeof s2 - (size_t)off, "%s%s", i ? ", " : "", one);
+        }
+        snprintf(s2 + off, sizeof s2 - (size_t)off, ")");
+        semErr(9, nodeLine(idNode),
+               "Function \"%s\" is not applicable for arguments \"%s\"", s1, s2);
+    }
+    return e->type;
+}
+
+/* ══ 语句的**结构遍历**（Task 8 加；语句层的检查归 Task 9）═══
+ *
+ * ⚠️ **这一节是 Task 8 对计划边界的一处调整，已上报（task-8-report.md）。**
+ * 计划把 `analyzeStmtList` 整个留给 Task 9（"语句与作用域"），但 Task 8 要落地的
+ * 11 个官方必做样例**每一条的错误都长在语句里的表达式上**（`j = i + 1;`、
+ * `inc(i);`、`i[1.5] = 10;`、`i.x;`、`if (p.n == 3.7)`……），而表达式除了
+ * 全局/局部定义里的初始化式之外**只能经语句到达**。实测证据：语句层留空壳时
+ * `int main(){ int i = 0; j = i + 1; }` 一条输出都没有，Step 4 的 11 条样例会
+ * 全部以"无期望输出"的形式静默失败。故这里补上**只做结构下潜、不做任何语句层
+ * 检查**的遍历，让表达式可达。
+ *
+ * **刻意的空缺 —— 别在这里补（那是 Task 9 的开关点）：**
+ *   · `RETURN Exp SEMI` 只分析表达式，**不查错误 8**（返回类型不匹配）；
+ *   · `IF`/`WHILE` 的条件只分析表达式，**不查"条件必须是 int"**（决策 2，报错误 7）。
+ * 于是 Task 9 的工作收敛为"在这两个位置插检查"，不是"从零写遍历"。 */
+static void analyzeStmt(const Node *n) {
+    const Node *c0 = n->nchild > 0 ? n->child[0] : NULL;
+
+    switch (n->nchild) {
+    case 1:                                         /* Stmt : CompSt */
+        if (c0 && c0->type == NT_COMPST) analyzeCompSt(c0, /*freshScope=*/1);
+        return;
+    case 2:                                         /* Stmt : Exp SEMI | error SEMI */
+        /* `Stmt : error SEMI` 的 child[0] 是 bison 的 error 符号，语义值未定义、
+         * 可能是垃圾指针（与 extdefKind 同一处境），故先判类型再解引用。
+         * 该分支只在有语法错误时出现，而那时 main 根本不调用语义分析 —— 防御而已。 */
+        if (c0 && c0->type == NT_EXP) (void)analyzeExp((Node *)c0);
+        return;
+    case 3:                                         /* Stmt : RETURN Exp SEMI */
+        (void)analyzeExp((Node *)n->child[1]);
+        return;
+    case 5:                                         /* Stmt : IF/WHILE LP Exp RP Stmt */
+        (void)analyzeExp((Node *)n->child[2]);
+        analyzeStmt(n->child[4]);
+        return;
+    case 7:                                         /* Stmt : IF LP Exp RP Stmt ELSE Stmt */
+        (void)analyzeExp((Node *)n->child[2]);
+        analyzeStmt(n->child[4]);
+        analyzeStmt(n->child[6]);
+        return;
+    default:
+        return;
+    }
+}
+
+static void analyzeStmtList(const Node *n) {        /* StmtList : Stmt StmtList | ε */
+    if (n->nchild == 0) return;
+    analyzeStmt(n->child[0]);
+    analyzeStmtList(n->child[1]);
+}
 
 /* ── VarDec ──────────────────────────────────────────────── */
 
