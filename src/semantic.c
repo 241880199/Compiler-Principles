@@ -428,7 +428,7 @@ static Type analyzeCall(const Node *n, int hasArgs) {
     return e->type;
 }
 
-/* ══ 语句的**结构遍历**（Task 8 加；语句层的检查归 Task 9）═══
+/* ══ 语句遍历与**语句层检查**（结构遍历 Task 8 加；两处检查 Task 9 加）═══
  *
  * ⚠️ **这一节是 Task 8 对计划边界的一处调整，已上报（task-8-report.md）。**
  * 计划把 `analyzeStmtList` 整个留给 Task 9（"语句与作用域"），但 Task 8 要落地的
@@ -436,41 +436,68 @@ static Type analyzeCall(const Node *n, int hasArgs) {
  * `inc(i);`、`i[1.5] = 10;`、`i.x;`、`if (p.n == 3.7)`……），而表达式除了
  * 全局/局部定义里的初始化式之外**只能经语句到达**。实测证据：语句层留空壳时
  * `int main(){ int i = 0; j = i + 1; }` 一条输出都没有，Step 4 的 11 条样例会
- * 全部以"无期望输出"的形式静默失败。故这里补上**只做结构下潜、不做任何语句层
- * 检查**的遍历，让表达式可达。
+ * 全部以"无期望输出"的形式静默失败。故 Task 8 先补上了一版**只做结构下潜、
+ * 不做任何语句层检查**的遍历，让表达式可达。
  *
- * **刻意的空缺 —— 别在这里补（那是 Task 9 的开关点）：**
- *   · `RETURN Exp SEMI` 只分析表达式，**不查错误 8**（返回类型不匹配）；
- *   · `IF`/`WHILE` 的条件只分析表达式，**不查"条件必须是 int"**（决策 2，报错误 7）。
- * 于是 Task 9 的工作收敛为"在这两个位置插检查"，不是"从零写遍历"。 */
+ * **Task 8 留的两个空缺已被 Task 9 补上**（就是下面 `checkCondition` 与 RETURN
+ * 分支里的那两句）：
+ *   · `RETURN Exp SEMI` → 错误 8（返回类型与函数返回类型不匹配）；
+ *   · `IF`/`WHILE` 的条件 → 决策 2（条件必须是 `int`，报错误 7）。
+ * 结构下潜本身（`Stmt : CompSt` 压栈、`Stmt : Exp SEMI` 只分析表达式）没有改动。 */
+
+/* **决策 2 的开关点**：if/while 的条件必须是 int（假设 2）。
+ * 17 种错误里没有"条件类型错"，取错误 7（操作数类型与操作符不匹配）——
+ * 把 if/while 看作要求 int 操作数的运算。专属用例 `dec02_condnotint.cmm`。
+ *
+ * `checkable` 那半条不能省（决策 8 / §5.3 的 UNKNOWN 毒化）：`if (undefined_var)`
+ * 只应报上游那条错误 1，不该在这里再报一条条件类型错。 */
+static void checkCondition(const Node *exp) {
+    Type t = analyzeExp((Node *)exp);
+    if (checkable(t) && !isIntT(t))
+        semErr(7, nodeLine(exp), "The condition of if/while must be an int");
+}
+
+/* 语句分派：只看 child[0] 是不是某个词法单元（再看子结点类型）。
+ * 7 种 Stmt 产生式在此穷举：
+ *   Stmt : CompSt | Exp SEMI | RETURN Exp SEMI | IF LP Exp RP Stmt
+ *        | IF LP Exp RP Stmt ELSE Stmt | WHILE LP Exp RP Stmt | error SEMI
+ * `Stmt : error SEMI` 的 child[0] 是 bison 的 error 符号，语义值未定义、可能是
+ * 垃圾指针（与 extdefKind 同一处境），故先判空。该分支在本程序里**不可达** ——
+ * 有语法错误时 hasError() 为真，main 根本不会调用语义分析（见 src/main.c）。
+ * 防御而已。 */
 static void analyzeStmt(const Node *n) {
     const Node *c0 = n->nchild > 0 ? n->child[0] : NULL;
+    if (!c0) return;
 
-    switch (n->nchild) {
-    case 1:                                         /* Stmt : CompSt */
-        if (c0 && c0->type == NT_COMPST) analyzeCompSt(c0, /*freshScope=*/1);
-        return;
-    case 2:                                         /* Stmt : Exp SEMI | error SEMI */
-        /* `Stmt : error SEMI` 的 child[0] 是 bison 的 error 符号，语义值未定义、
-         * 可能是垃圾指针（与 extdefKind 同一处境），故先判类型再解引用。
-         * 该分支只在有语法错误时出现，而那时 main 根本不调用语义分析 —— 防御而已。 */
-        if (c0 && c0->type == NT_EXP) (void)analyzeExp((Node *)c0);
-        return;
-    case 3:                                         /* Stmt : RETURN Exp SEMI */
-        (void)analyzeExp((Node *)n->child[1]);
-        return;
-    case 5:                                         /* Stmt : IF/WHILE LP Exp RP Stmt */
-        (void)analyzeExp((Node *)n->child[2]);
-        analyzeStmt(n->child[4]);
-        return;
-    case 7:                                         /* Stmt : IF LP Exp RP Stmt ELSE Stmt */
-        (void)analyzeExp((Node *)n->child[2]);
-        analyzeStmt(n->child[4]);
-        analyzeStmt(n->child[6]);
-        return;
-    default:
-        return;
+    if (c0->kind == NODE_TOKEN) {
+        const char *nm = c0->name;
+
+        if (strcmp(nm, "RETURN") == 0) {                /* Stmt : RETURN Exp SEMI */
+            /* 错误 8：行号取 RETURN（设计文档 §7 第 8 条）。
+             * 两条守卫都不省：`curFuncReturn` 为 NULL 时（不可能出现在此处，
+             * 但防御）不做比较；`checkable` 那半条是 UNKNOWN 毒化 ——
+             * `float f(){ return undefined_var; }` 只该报错误 1。 */
+            Type t = analyzeExp((Node *)n->child[1]);
+            if (curFuncReturn && checkable(t) && !typeEqual(t, curFuncReturn))
+                semErr(8, nodeLine(n), "Type mismatched for return");
+            return;
+        }
+        if (strcmp(nm, "IF") == 0 || strcmp(nm, "WHILE") == 0) {
+            /* Stmt : IF LP Exp RP Stmt [ELSE Stmt] | WHILE LP Exp RP Stmt */
+            checkCondition(n->child[2]);
+            analyzeStmt(n->child[4]);
+            if (n->nchild == 7) analyzeStmt(n->child[6]);
+            return;
+        }
+        return;                                         /* Stmt : error SEMI（不可达）*/
     }
+
+    /* `Stmt : CompSt` —— **决策 3 的另一半，就是下面这个 `1`**：作为语句出现的
+     * `{...}` 是**新作用域**（选做 2.2），而函数体的 `{...}` 不是（它的作用域已由
+     * analyzeExtDef 压好、形参与之同层，故那边传 0）。两处 freshScope 就是全部开关，
+     * 互换任一处都会让对应用例变红（见 plans 的 Task 11 变异表第 8 行）。 */
+    if (c0->type == NT_COMPST) { analyzeCompSt(c0, /*freshScope=*/1); return; }
+    if (c0->type == NT_EXP)    { (void)analyzeExp((Node *)c0); return; }   /* Stmt : Exp SEMI */
 }
 
 static void analyzeStmtList(const Node *n) {        /* StmtList : Stmt StmtList | ε */

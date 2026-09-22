@@ -1,0 +1,7 @@
+int f(int i)
+{
+  int i;
+}
+int main()
+{
+}
