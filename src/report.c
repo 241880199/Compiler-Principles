@@ -45,16 +45,36 @@ void reportError(char type, int line, const char *msg) {
     printf("Error type %c at Line %d: %s.\n", type, line, msg);
 }
 
-/* 最近一次语义错误打印所在行；-1 表示尚未打印过。
+/* **已打印过的**语义错误行号集合（含 0 个元素时表示尚未打印过）。
  * **与 type A/B 那条路径完全独立** —— 实验一的 lastALine 抑制逻辑有已知代价、
  * 且有 30 个用例依赖它；而实验二的输入不含 A/B 错误，两条路径不会相遇。
- * 合并两者的唯一效果是把实验一已验证的行为改坏。 */
-static int lastSemanticLine = -1;
+ * 合并两者的唯一效果是把实验一已验证的行为改坏。
+ *
+ * 为什么是**集合**而不是"上一次打印的行号"（2026-09-22 评审修正）：
+ * 判据是要求书"每行最多只有一个错误" + §8 第 9 条"留最先检出的那条"，都是**无条件**的
+ * —— 一条打印过的行，此后**任何时刻**再报都必须被抑制，与相邻与否无关。只记"上一个行号"
+ * 只能挡住**连续**的同行错误：行号非单调时（L → M → L，M > L）第 L 行会被打印第二次，
+ * 直接违反判据。
+ *
+ * **可达性是真实的**，不是理论构造：§7 的检查顺序表刻意**不**在错误 6 与错误 5 之间短路
+ * `Exp ASSIGNOP Exp` —— 先在左子结点的行报 6，再分析右操作数（可以报在**更靠后**的行），
+ * 最后回到赋值语句的行报 5。毒化只能在中间那条错误返回 UNKNOWN 时才救场，而**错误 9 返回的
+ * 是函数返回类型而非 UNKNOWN**，所以 `(x) = f(1,2)` 这类（x 为 float、f 返回 int、实参不匹配）
+ * 能真的走出 L → M → L。
+ *
+ * 容量：语义错误一共 19 种、单次运行的打印条数是个位数，128 个行号远超实际需要。
+ * 真溢出时按**不抑制**处理（宁可多打印也不吞掉真实错误）—— 该分支在评测输入上不可达。 */
+#define SEMANTIC_LINE_MAX 128
+static int semPrintedLines[SEMANTIC_LINE_MAX];
+static int semPrintedCount = 0;
 
 int reportSemanticError(int code, int line, const char *msg) {
-    errorFlag = 1;
-    if (line == lastSemanticLine) return 0;   /* 同行只留最先检出的（§8 第 9 条） */
-    lastSemanticLine = line;
+    int i;
+    errorFlag = 1;   /* 必须在最前：被抑制的错误**也算**错误（与 reportError 同一约定，见上） */
+    for (i = 0; i < semPrintedCount; i++) {
+        if (semPrintedLines[i] == line) return 0;   /* 同行只留最先检出的（§8 第 9 条） */
+    }
+    if (semPrintedCount < SEMANTIC_LINE_MAX) semPrintedLines[semPrintedCount++] = line;
     printf("Error type %d at Line %d: %s.\n", code, line, msg);
     return 1;
 }
