@@ -30,7 +30,9 @@ fail=0
 lab2_ran=0
 tmp=$(mktemp)
 err=$(mktemp)
-trap 'rm -f "$tmp" "$err"' EXIT
+# check_pairs 用：存放从实测输出里抽出来的 "(错误类型, 行号)" 序列。
+tmp2=$(mktemp)
+trap 'rm -f "$tmp" "$err" "$tmp2"' EXIT
 
 # 单个用例的完整判定。抽成函数是因为要跑两个目录、两个程序（见下方两个循环），
 # 而这三条防线一条都不能少：
@@ -64,10 +66,31 @@ check_one() {
     fi
     if diff -q "$exp" "$tmp" > /dev/null; then
         pass=$((pass + 1))
+        check_pairs "$cmm" "$tmp"
     else
         fail=$((fail + 1))
         echo "FAIL  $cmm"
         diff -u "$exp" "$tmp" | sed 's/^/      /' | head -30
+    fi
+}
+
+# 官方样例的**评分字段**校验：只比"错误类型 + 行号"序列，不比说明文字。
+# 要求书明说"说明文字的内容没有具体要求，但是错误类型和出错的行号一定要正确，
+# 因为这是判断输出的错误提示信息是否正确的唯一标准"（3.1.3 节）。
+# 故这里与 `.exp` 分成两层：`.exp` 钉**我们的完整文本**（防回归），`.pairs` 钉
+# **官方的 (类型,行号) 序列**（防判分失分）。合并成一条会让"改了说明文字"与
+# "错误类型/行号搞错了"无法区分 —— 实验一的教训。
+# 只在 `.exp` 已通过时调用（见 check_one 的成功分支）：输出本身是错的时候，
+# `.pairs` 的 diff 只是噪声，会掩盖真正的回归。
+check_pairs() {
+    cmm="$1"; out="$2"
+    pairs="${cmm%.cmm}.pairs"
+    [ -f "$pairs" ] || return 0
+    sed -nE 's/^Error type ([0-9]+) at Line ([0-9]+):.*/\1 \2/p' "$out" > "$tmp2"
+    if ! diff -q "$pairs" "$tmp2" > /dev/null; then
+        echo "FAIL  $cmm  （判分字段不符：期望的 (类型,行号) 序列与实测不一致）"
+        diff -u "$pairs" "$tmp2" | sed 's/^/      /' | head -20
+        fail=$((fail + 1))
     fi
 }
 
@@ -90,6 +113,49 @@ if [ -d Test/lab2 ]; then
         check_one "$cmm" "$runner"
     done
 fi
+
+# ── 决策用例必须存在 ────────────────────────────────────────
+# 设计文档 §8 的十条决策各有一个专属用例。缺一个就判 FAIL ——
+# 否则"改错一条决策"将没有任何用例能发现（实验一 crlf.cmm 那次同类：
+# 防线静默消失、全部用例照过）。
+#
+# ⚠ **这份名单是随用例落地而增长的，当前只列已经存在的 5 个。**
+#   计划 Task 11 落地时要把名单扩到**全量 16 个**：
+#     dec01_namekind dec02_condnotint dec03_paramscope dec04_localstruct
+#     dec05_undefonly dec06_arrindex dec07_keepfirst dec08_poison
+#     dec09_sameline dec09b_nonmono dec10_useorder dec11_declconflict
+#     dec12_decl_ok_conflict dec13_mutualstruct dec14_rejecteddef_params
+#     dec15_iforder
+#   现在只列 5 个**不是漏写**：其余 11 个尚未创建（归 Task 11）。
+#   断言在只覆盖 5 个时**其全部价值已经成立** —— "已被创建的决策用例被删掉"
+#   这一刻它就会报警；扩名单只是把同样这条防线覆盖到更多用例上。
+#
+# 已知的两个"既有、但不在计划 Task 11 创建清单里"的用例（**不要重复创建**）：
+#   dec08_poison            Task 8 修缺陷时补的
+#   dec14_rejecteddef_params Task 7 修缺陷时补的
+#
+# 用例名 → 决策编号：#1 名字空间冲突 #2 条件非 int #3 形参作用域 #4 局部结构体
+#                   #5 只有未定义结构体 #6 下标是数组 #7 保留最早 #8 UNKNOWN 毒化
+#                   #9 同行去重（两个用例：adjacent 顺序 + nonmono 非单调行号）
+#                   #10 定义先于使用
+# dec11..dec14 不是新增决策，而是**已有规则在边界上的钉**（故不加进设计文档 §8 的十条表）：
+#   dec11 声明 + 签名不一致的**定义** → 19 与 18（定义被拒 ⇒ 终态确实无定义）
+#   dec12 定义在前 + 冲突声明       → 只有 19（定义被接受 ⇒ 不报 18）
+#   dec13 互相包含的结构体          → 17（全项目唯一"顺序不可倒退"之处，顺序反了就栈溢出）
+#   dec14 被拒定义的形参作用域      → 3（决策 3 扩展到被拒定义上；Task 7 评审缺陷的守卫）
+# 注意 dec09b_nonmono 是**端到端**的判别用例（非单调行号 L→M→L），
+# 它比单测强：走的是真实遍历。不要因为它名字带 b 就以为可以省。
+for d in dec02_condnotint dec03_paramscope dec08_poison \
+         dec10_useorder dec14_rejecteddef_params; do
+    if [ ! -f "Test/lab2/$d.cmm" ]; then
+        echo "FAIL  决策用例缺失：Test/lab2/$d.cmm（设计文档 §8 的对应开关失去守护）"
+        fail=$((fail + 1))
+    fi
+    if [ ! -f "Test/lab2/$d.exp" ]; then
+        echo "FAIL  决策用例缺期望文件：Test/lab2/$d.exp"
+        fail=$((fail + 1))
+    fi
+done
 
 # ── 冲突数断言 ────────────────────────────────────────────────
 # **期望恰好 3 个冲突 state，且每个都是「1 shift/reduce」。** 归属（实测，粘自
