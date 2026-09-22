@@ -45,4 +45,18 @@ void reportError(char type, int line, const char *msg) {
     printf("Error type %c at Line %d: %s.\n", type, line, msg);
 }
 
+/* 最近一次语义错误打印所在行；-1 表示尚未打印过。
+ * **与 type A/B 那条路径完全独立** —— 实验一的 lastALine 抑制逻辑有已知代价、
+ * 且有 30 个用例依赖它；而实验二的输入不含 A/B 错误，两条路径不会相遇。
+ * 合并两者的唯一效果是把实验一已验证的行为改坏。 */
+static int lastSemanticLine = -1;
+
+int reportSemanticError(int code, int line, const char *msg) {
+    errorFlag = 1;
+    if (line == lastSemanticLine) return 0;   /* 同行只留最先检出的（§8 第 9 条） */
+    lastSemanticLine = line;
+    printf("Error type %d at Line %d: %s.\n", code, line, msg);
+    return 1;
+}
+
 int hasError(void) { return errorFlag; }

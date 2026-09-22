@@ -100,6 +100,17 @@ Test/unit/test_symtab: Test/unit/test_symtab.c src/symtab.c src/type.c src/util.
 symtab-test: Test/unit/test_symtab
 	@bash -o pipefail -c './Test/unit/test_symtab' && echo "PASS symtab"
 
+# report 单测：钉住实验二的 reportSemanticError —— 数字错误类型 + 同行去重。
+# 与实验一 reportError 的 A/B 路径**完全独立**（两条路径在评测中不会相遇，见设计文档 §10.2），
+# 本单测不覆盖 A/B 路径；那条路径由 Test/regress 的 30 个样例把关。
+# stdout 是逐字节比对的对象，故测试自己的 ok/FAIL 提示一律写 stderr。
+Test/unit/test_report: Test/unit/test_report.c src/report.c src/report.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_report.c src/report.c
+
+report-test: Test/unit/test_report
+	@bash -o pipefail -c './Test/unit/test_report | diff -u Test/unit/report_expected.txt -' \
+	    && echo "PASS report"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -110,9 +121,9 @@ symtab-test: Test/unit/test_symtab
 # 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
-.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test
+.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
-	      Test/unit/test_nodetype Test/unit/test_symtab \
+	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
 	      Test/regress/driver Test/regress/*.o
