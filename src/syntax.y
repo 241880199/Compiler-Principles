@@ -51,6 +51,13 @@ ExtDef
   : Specifier ExtDecList SEMI   { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | Specifier SEMI              { $$ = newNode("ExtDef", 2, $1, $2); }
   | Specifier FunDec CompSt     { $$ = newNode("ExtDef", 3, $1, $2, $3); }
+/* 错误恢复同步点之外的第二处文法扩展（选做 2.1）：函数声明。
+   附录 A 的 ExtDef 只有三条产生式，没有函数声明，要求书 2.1(c) 明说需要改文法。
+   不与 `Specifier ExtDecList SEMI` 冲突：在 `Specifier` 之后看到 ID 时，状态里
+   同时有 `VarDec: ID •` 与 `FunDec: ID • LP …`；前瞻为 SEMI/COMMA/LB 时归约为
+   VarDec，前瞻为 LP 时移进 —— FunDec 的两条产生式都以 ID LP 开头，LALR(1) 够用。
+   不支持的写法：省略参数名的声明（int foo(int, float)）—— 要求书明说不要求支持。 */
+  | Specifier FunDec SEMI       { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | error SEMI                  { $$ = newNode("ExtDef", 2, $1, $2); }
   ;
 
@@ -119,8 +126,12 @@ DefList
    代价（实测）：新增 2 个冲突 state —— `DefList` 可空，于是"看 `error` 时移进"与
    "按 `DefList → ε` 归约"不可兼得。**这两处的确切归属（粘自 syntax.output）**：
 
-     State 26  `CompSt: LC • DefList StmtList RC`
-     State 31  `DefList: Def • DefList`          ← 递归式，前瞻集与 State 26 相同
+     State 27  `CompSt: LC • DefList StmtList RC`
+     State 32  `DefList: Def • DefList`          ← 递归式，前瞻集与 State 27 相同
+   （编号为 Task 6 加 `ExtDef : Specifier FunDec SEMI` 之后的实测值；该新产生式
+   只新增 1 个 state 且落在第 26 位，故 ≥26 的编号统一 +1，原先的 26/31 即 27/32。
+   冲突个数不变，理由见上方 `ExtDef` 中新产生式 `Specifier FunDec SEMI` 的说明
+   与 scripts/run_tests.sh 的「冲突数断言」块。）
 
    注意**不是** `StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）——
    结构体成员表后面只能跟 `RC`，`error` 不进它的前瞻集，那里 `error` 是个无歧义的

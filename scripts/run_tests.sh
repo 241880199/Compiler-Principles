@@ -93,26 +93,46 @@ fi
 
 # ── 冲突数断言 ────────────────────────────────────────────────
 # **期望恰好 3 个冲突 state，且每个都是「1 shift/reduce」。** 归属（实测，粘自
-# syntax.output，bison 3.8.2 与 3.0.4 两版一致）：
+# syntax.output；bison 3.8.2（本机）、3.5.1（focal，判分版）与 3.0.4（bionic）
+# 三版**完全一致** —— state 编号、状态项、冲突双方、动作全部逐字相同，
+# 只有 • 的写法不同（3.5.1/3.0.4 印 `.`，3.8.2 印 `•`）：
 #
-#   ① State 26  `CompSt: LC • DefList StmtList RC`
-#        error  shift, and go to state 28
-#        error  [reduce using rule 24 (DefList)]      ← 冲突
-#   ② State 31  `DefList: Def • DefList`
-#        error  shift, and go to state 28
-#        error  [reduce using rule 24 (DefList)]      ← 冲突
+#   ① State 27  `CompSt: LC • DefList StmtList RC`
+#        error  shift, and go to state 29
+#        error  [reduce using rule 25 (DefList)]      ← 冲突
+#   ② State 32  `DefList: Def • DefList`
+#        error  shift, and go to state 29
+#        error  [reduce using rule 25 (DefList)]      ← 冲突
 #   ③ State 114 `Stmt: IF LP Exp RP Stmt •` / `| IF LP Exp RP Stmt • ELSE Stmt`
-#        ← 悬空 else，Bison 默认移进即 C 语义
+#        ELSE  shift, and go to state 116
+#        ELSE      [reduce using rule 40 (Stmt)]      ← 冲突
+#        （悬空 else，Bison 默认移进即 C 语义）
+#
+# 编号的由来（Task 6 加选做 2.1 的 `ExtDef : Specifier FunDec SEMI` 之后重测）：
+# 这条新产生式只**新增 1 个 state** —— State 26 恰好就是它的完成项
+# `ExtDef: Specifier FunDec SEMI •`；该 state 落在 Bison 状态构造序的第 26 位，
+# 于是 **≥26 的所有 state 编号统一 +1**（26→27、31→32、113→114），
+# 总 state 数 117→118，**而冲突个数不变（仍是 3）**。没有新冲突是因为新产生式
+# 不引入任何新的取舍：`Specifier` 之后看到 ID 时，状态里同时有 `VarDec: ID •`
+# 与 `FunDec: ID • LP …`；前瞻 SEMI/COMMA/LB 归约为 VarDec，前瞻 LP 移进，
+# FunDec 的两条产生式都以 `ID LP` 开头，1 个前瞻符号够用（LALR(1) 足够）。
+# 在 26 之前的 state 编号**未变** —— 下文的 `StructSpecifier` 仍是 State 20。
 #
 # ①② 都是 `Def : error`（错误恢复同步点之四，见 src/syntax.y）引起的同一件事：
 # **`DefList` 可空**，于是"看 `error` 时移进"与"按 `DefList → ε` 归约"不可兼得。
 # 它们只出现在 `CompSt` 一路（`error` 能跟在 `DefList` 之后，因为 `StmtList` 可
 # 以 `error` 开头）；`StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）
 # **不冲突** —— 结构体成员表后面只能跟 `RC`，`error` 根本不进它的前瞻集，
-# 那里 `error` 是个无歧义的移进动作。故"两处"指的是 State 26/31，**不是**
+# 那里 `error` 是个无歧义的移进动作。故"两处"指的是 State 27/32，**不是**
 # `StructSpecifier`。带同步符的 `Def : error SEMI` 引入的是**同样这 2 个**冲突
 # （冲突由 `error` 符号本身引起，与后面跟不跟同步符无关），所以"不带同步符"是
 # 纯收益，未额外付冲突代价。
+#
+# ⚠ 编号的坑（Task 6 实测澄清）：本块与 src/syntax.y 里原先写的 `State 114`
+# 是**按 `Def : error SEMI` 变体测的**（那一版冲突落在 26/31/114）。改成裸
+# `error` 后少了一个 state，悬空 else 实际退到 113，但当时只重推了"个数"
+# 没重测"编号"，于是 114 这个错号一直留在注释里（**断言只数个数，抓不到错号**）。
+# 裸 `error` + Task 6 新产生式后实测回到 114，属巧合对上，不是原注释本来正确。
 #
 # 这条断言不可省：实测有无 %left LB DOT 的 LR 动作表**完全相同**，
 # 所有 .exp 比对都察觉不到它被误删，只有这个计数能发现。
@@ -166,7 +186,7 @@ if [ -f syntax.output ]; then
     # （state 编号大小写用 [Ss] 兼容 3.0.4）。
     n=$(grep -cE '^[Ss]tate [0-9]+ conflicts:' syntax.output)
     if [ "$n" -ne 3 ]; then
-        echo "FAIL  期望恰好 3 个冲突 state（悬空 else 1 + Def : error 2），实测 $n 个"
+        echo "FAIL  期望恰好 3 个冲突 state（State 27、32 来自 Def : error，State 114 是悬空 else），实测 $n 个"
         grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
         fail=$((fail + 1))
     elif [ "$(grep -cE '^[Ss]tate [0-9]+ conflicts: 1 shift/reduce$' syntax.output)" -ne 3 ]; then
