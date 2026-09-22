@@ -3,7 +3,8 @@ FLEX   = flex
 BISON  = bison
 CFLAGS = -std=c99 -Wall -g -Isrc
 
-SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c src/type.c
+SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c src/type.c \
+         src/symtab.c
 OBJS   = $(SRCS:.c=.o)
 
 # 默认目标**只有** ./parser。
@@ -53,7 +54,7 @@ syntax.tab.o: syntax.tab.c src/tree.h src/report.h
 lex.yy.o: lex.yy.c syntax.tab.h src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ lex.yy.c
 
-%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h src/type.h
+%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h src/type.h src/symtab.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # src/util.c 必须一起链：tree.c 里的 xmalloc/xstrdup 自实验二起搬到了 util.c
@@ -88,6 +89,17 @@ Test/unit/test_nodetype: Test/unit/test_nodetype.c src/tree.c src/tree.h src/uti
 nodetype-test: Test/unit/test_nodetype
 	@bash -o pipefail -c './Test/unit/test_nodetype' && echo "PASS nodetype"
 
+# symtab 单测：钉住"冲突码规则只有一处"（§8 第 1 条）与"保留最早那个"（§8 第 7 条）。
+# 它同时是 HASH_SIZE 的把关者 —— hashPJW 的值域恰好是 0..0x3fff（16384 个值），
+# 表长写小了就会在"返回值落在 1024..16383"时越界写内存。
+# 已做变异测试：把 HASH_SIZE 改成 1024，本单测 SIGSEGV（exit 139），不是静默出错。
+Test/unit/test_symtab: Test/unit/test_symtab.c src/symtab.c src/type.c src/util.c \
+                       src/symtab.h src/type.h src/tree.h src/util.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_symtab.c src/symtab.c src/type.c src/util.c
+
+symtab-test: Test/unit/test_symtab
+	@bash -o pipefail -c './Test/unit/test_symtab' && echo "PASS symtab"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -98,9 +110,9 @@ nodetype-test: Test/unit/test_nodetype
 # 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
-.PHONY: all clean unit-test lexer-test type-test nodetype-test
+.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
-	      Test/unit/test_nodetype \
+	      Test/unit/test_nodetype Test/unit/test_symtab \
 	      Test/regress/driver Test/regress/*.o
