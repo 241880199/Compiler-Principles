@@ -8,6 +8,10 @@ if [ ! -x ./parser ]; then
     echo "错误：未找到 ./parser，请先运行 make" >&2
     exit 1
 fi
+if [ ! -x Test/regress/driver ]; then
+    echo "错误：未找到 Test/regress/driver，请先运行 make" >&2
+    exit 1
+fi
 
 pass=0
 fail=0
@@ -15,37 +19,36 @@ tmp=$(mktemp)
 err=$(mktemp)
 trap 'rm -f "$tmp" "$err"' EXIT
 
-for cmm in Test/sample/*.cmm Test/err/*.cmm; do
-    [ -e "$cmm" ] || continue
+# 单个用例的完整判定。抽成函数是因为要跑两个目录、两个程序（见下方两个循环），
+# 而这三条防线一条都不能少：
+#   ① stderr **单独**捕获，不并进比对的 stdout。若写成 `> "$tmp" 2>&1`，把 reportError
+#      改成 fprintf(stderr, ...) 仍然全绿 —— 而要求书 2.1.3 要求错误提示信息输出到
+#      **标准输出**，判分脚本读的是 stdout。合并流会让这条规范悄悄失效。
+#   ② 退出码检查：程序恒返回 0（要求书未规定退出码），非 0 一定是异常。段错误会留下
+#      空输出，不查状态码就会与"正确地什么都不打印"混淆。
+#   ③ .exp 缺失判 FAIL：否则用例被删掉 .exp 后会静默变成"无期望输出"。
+check_one() {
+    cmm="$1"; runner="$2"
     exp="${cmm%.cmm}.exp"
     if [ ! -f "$exp" ]; then
         echo "FAIL  $cmm  （缺同名 .exp）"
         fail=$((fail + 1))
-        continue
+        return
     fi
-
-    # stderr **单独**捕获，不并进比对的 stdout。
-    # 若写成 `> "$tmp" 2>&1`，把 reportError 改成 fprintf(stderr, ...) 仍然全绿 ——
-    # 而要求书 2.1.3 要求错误提示信息输出到**标准输出**，判分脚本读的是 stdout。
-    # 合并流会让这条规范悄悄失效，故必须分开断言。
-    ./parser "$cmm" > "$tmp" 2> "$err"
+    "$runner" "$cmm" > "$tmp" 2> "$err"
     status=$?
-    # parser 恒返回 0（要求书未规定退出码），非 0 一定是异常。
-    # 段错误会留下空输出，不查状态码就会与"正确地什么都不打印"混淆。
     if [ "$status" -ne 0 ]; then
-        echo "FAIL  $cmm  （parser 退出码 $status）"
+        echo "FAIL  $cmm  （退出码 $status）"
         fail=$((fail + 1))
-        continue
+        return
     fi
-
     # 非空即判 FAIL：标准错误上不该有任何输出。
     if [ -s "$err" ]; then
-        echo "FAIL  $cmm  （stderr 非空 —— 要求书 2.1.3 要求输出到标准输出）"
+        echo "FAIL  $cmm  （stderr 非空 —— 要求书要求输出到标准输出）"
         sed 's/^/      /' "$err" | head -10
         fail=$((fail + 1))
-        continue
+        return
     fi
-
     if diff -q "$exp" "$tmp" > /dev/null; then
         pass=$((pass + 1))
     else
@@ -53,7 +56,24 @@ for cmm in Test/sample/*.cmm Test/err/*.cmm; do
         echo "FAIL  $cmm"
         diff -u "$exp" "$tmp" | sed 's/^/      /' | head -30
     fi
+}
+
+# 实验一的用例（Test/sample、Test/err）期望的是**语法树或 A/B 错误**，由回归驱动跑；
+# 实验二的用例（Test/lab2）期望的是**语义错误**，由 ./parser 跑。
+for cmm in Test/sample/*.cmm Test/err/*.cmm; do
+    [ -e "$cmm" ] || continue
+    runner=./Test/regress/driver
+    check_one "$cmm" "$runner"
 done
+
+# Test/lab2 由后续任务建立；不存在时整段跳过，实验一的 30 个用例仍照跑。
+if [ -d Test/lab2 ]; then
+    for cmm in Test/lab2/*.cmm; do
+        [ -e "$cmm" ] || continue
+        runner=./parser
+        check_one "$cmm" "$runner"
+    done
+fi
 
 # ── 冲突数断言 ────────────────────────────────────────────────
 # **期望恰好 3 个冲突 state，且每个都是「1 shift/reduce」。** 归属（实测，粘自
@@ -105,7 +125,8 @@ fi
 # ── 显式声明未纳入范围的 .cmm ─────────────────────────────────
 # Test/unit/ 下的 .cmm 由 unit-test / lexer-test 各自负责。显式列出，
 # 避免"漏掉某个目录"变成静默行为。
-other=$(find Test -name '*.cmm' -not -path 'Test/sample/*' -not -path 'Test/err/*' 2>/dev/null)
+other=$(find Test -name '*.cmm' -not -path 'Test/sample/*' -not -path 'Test/err/*' \
+        -not -path 'Test/lab2/*' 2>/dev/null)
 if [ -n "$other" ]; then
     echo "NOTE  以下 .cmm 不在本脚本范围内（由各自的单测目标负责）："
     echo "$other" | sed 's/^/      /'

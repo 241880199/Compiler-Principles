@@ -1,21 +1,7 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdarg.h>
 #include "tree.h"
-
-static void *xmalloc(size_t n) {
-    void *p = malloc(n);
-    if (!p) { fprintf(stderr, "out of memory\n"); exit(1); }
-    return p;
-}
-
-static char *xstrdup(const char *s) {
-    if (!s) return NULL;
-    char *p = xmalloc(strlen(s) + 1);
-    strcpy(p, s);
-    return p;
-}
+#include "util.h"
 
 Node *newToken(const char *name, int line, const char *lexeme) {
     Node *n = xmalloc(sizeof(Node));
@@ -49,7 +35,7 @@ Node *newNode(const char *name, int nchild, ...) {
 
 /* 子树中第一个词法单元的行号；子树不含词法单元时返回 0。
  * 返回 0 同时就是"该结点产生了 ε"的判定 —— 见设计文档 §4.1。 */
-static int nodeLine(const Node *n) {
+int nodeLine(const Node *n) {
     int i;
     if (n->kind == NODE_TOKEN) return n->line;
     for (i = 0; i < n->nchild; i++) {

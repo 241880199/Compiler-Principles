@@ -3,12 +3,25 @@ FLEX   = flex
 BISON  = bison
 CFLAGS = -std=c99 -Wall -g -Isrc
 
-SRCS   = src/main.c src/tree.c src/report.c
+SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c
 OBJS   = $(SRCS:.c=.o)
+
+# 默认目标：`make` 必须同时产出 ./parser 与 Test/regress/driver。
+# scripts/run_tests.sh 开头硬性要求这两个可执行文件都在（缺任一即 exit 1），
+# 而 make 的默认目标只是**第一个**目标 —— 不显式给出 all 的话 `make` 只建 parser，
+# 紧接着的 `bash scripts/run_tests.sh` 会立刻报"未找到 Test/regress/driver"。
+all: parser Test/regress/driver
 
 parser: $(OBJS) syntax.tab.o lex.yy.o
 	$(CC) -o $@ $^ -lfl
 	cp -f parser cc
+
+# 实验一回归驱动：它**不含** src/main.o（自己带 main）、也**不含** src/semantic.o
+# （实验一的 30 个 .exp 装的是语法树与 A/B 错误，不该跑语义分析）。
+REGOBJS = src/tree.o src/report.o src/util.o syntax.tab.o lex.yy.o
+
+Test/regress/driver: Test/regress/driver.o $(REGOBJS)
+	$(CC) -o $@ $^ -lfl
 
 # 两个产物同一条规则生成（`bison -d` 一次写出 .c 与 .h）。
 # 只写 `syntax.tab.c: src/syntax.y` 是不够的：`syntax.tab.h` 被手删后 make 并不知道
@@ -34,18 +47,20 @@ syntax.tab.o: syntax.tab.c src/tree.h src/report.h
 lex.yy.o: lex.yy.c syntax.tab.h src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ lex.yy.c
 
-%.o: %.c src/tree.h src/report.h
+%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h
-	$(CC) $(CFLAGS) -o $@ Test/unit/test_tree.c src/tree.c
+# src/util.c 必须一起链：tree.c 里的 xmalloc/xstrdup 自实验二起搬到了 util.c
+Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h src/util.c src/util.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_tree.c src/tree.c src/util.c
 
 unit-test: Test/unit/test_tree
 	@bash -o pipefail -c './Test/unit/test_tree | diff -u Test/unit/tree_expected.txt -' && echo "PASS tree"
 
 Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c \
-                      src/tree.h src/report.h
-	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c -lfl
+                      src/tree.h src/report.h src/util.c src/util.h
+	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c src/report.c \
+	      src/util.c -lfl
 
 lexer-test: Test/unit/test_lexer
 	@bash -o pipefail -c './Test/unit/test_lexer < Test/unit/lexer_in.cmm | diff -u Test/unit/lexer_expected.txt -' && echo "PASS lexer"
@@ -57,7 +72,7 @@ lexer-test: Test/unit/test_lexer
 # 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 是否存在
 
-.PHONY: clean unit-test lexer-test
+.PHONY: all clean unit-test lexer-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
-	      Test/unit/test_tree Test/unit/test_lexer
+	      Test/unit/test_tree Test/unit/test_lexer Test/regress/driver Test/regress/*.o
