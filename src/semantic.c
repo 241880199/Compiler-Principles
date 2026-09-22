@@ -278,8 +278,9 @@ static int sameSignature(const SymEntry *e, Type retType, const ParamInfo *ps, i
     return 1;
 }
 
-/* 登记函数名与签名，并**返回该在函数作用域里登记的形参表**（NULL = 不登记，
- * 此时 *nOut 为 0）。形参为什么不在本函数里登记、而要交给调用方，见上方 ⚠️。
+/* 登记函数名与签名，并**返回该在函数作用域里登记的形参表**（含被拒的定义，
+ * 见下方 ⚠️：*nOut 恒为 nparams、返回值恒为 ps）。形参为什么不在本函数里登记、
+ * 而要交给调用方，见 analyzeCompSt 上方那段 ⚠️。
  * 调用前提：curDepth 必须是**全局层**（函数名属于全局作用域，假设 6）。 */
 static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, int *nOut) {
     const Node *idNode = n->child[0];
@@ -289,8 +290,19 @@ static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, i
     SymEntry *e;
     int i;
 
-    *nOut = 0;
     if (n->nchild == 4) ps = collectParams(n->child[2], &nparams);
+    *nOut = nparams;
+
+    /* ⚠️ **失败路径也必须原样返回 ps 与 nparams —— 不能改成返回 NULL / 置 0。**
+     * 因为调用方（ED_FUNC 分支）**无论登记成功与否都会继续分析函数体**：
+     * 所以被拒的那种定义（重复定义、签名冲突）的函数体照样要跑，
+     * 而它的形参必须已经在作用域里。否则形参不在作用域 →
+     * 从 Task 8 起，函数体里每个形参的使用都会多报一条错误 1。
+     * 这个 bug 在 Task 7 里**几乎看不出来**（`analyzeExp` 是空壳，且必做样例 4 的
+     * 第二次定义恰好没有形参），会一路潜伏到 Task 8/9 才炸 —— 已由评审指出。
+     * Task 7 里唯一能钉住它的是 `Test/lab2/dec14_rejecteddef_params.cmm`：
+     * 被拒定义的函数体里有一条 `int i;` 与形参 `i` 重名 —— 形参不在作用域时
+     * 那句 `symEnter` 不会冲突，于是错误 3（第 8 行）整条消失。 */
 
     /* **这里先预检、只在 !e 时才调 symEnter** —— 这个顺序是有意的：`symEnter`
      * 对 SYM_FUNC 冲突本身就会返回 4（Task 4 的单测断言了这一点），若绕过预检
@@ -301,7 +313,7 @@ static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, i
     if (e && e->kind != SYM_FUNC) {
         semErr(symConflictCode(SYM_FUNC), nodeLine(idNode),
                "Redefined function \"%s\"", name);
-        return NULL;
+        return ps;
     }
 
     if (!e) {                                 /* 首次见到这个名字 */
@@ -311,8 +323,8 @@ static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, i
         for (i = 0; i < nparams; i++) e->params[i] = ps[i].type;
         e->nparams  = nparams;
         e->declLine = nodeLine(idNode);
-        if (isDefinition) { e->defined = 1; *nOut = nparams; return ps; }
-        return NULL;
+        if (isDefinition) e->defined = 1;
+        return ps;
     }
 
     /* **两次定义 → 错误 4。这一判必须在签名比较之前**：要求书必做样例 4 的两次
@@ -321,20 +333,16 @@ static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, i
      * "与声明无关，专指两次定义"。反过来的顺序（先比签名）会让样例 4 报出 19。 */
     if (isDefinition && e->defined) {
         semErr(4, nodeLine(idNode), "Redefined function \"%s\"", name);
-        return NULL;
+        return ps;
     }
 
     /* 其余不一致 = 声明与声明、或声明与定义冲突 → 错误 19（要求书 2.1(b)）*/
     if (!sameSignature(e, retType, ps, nparams)) {
         semErr(19, nodeLine(idNode), "Inconsistent declaration of function \"%s\"", name);
-        return NULL;
-    }
-    if (isDefinition) {                       /* 声明在前、定义在后且一致 */
-        e->defined = 1;
-        *nOut = nparams;
         return ps;
     }
-    return NULL;                              /* 一致地重复声明 → 合法，不报错（选做 2.1）*/
+    if (isDefinition) e->defined = 1;         /* 声明在前、定义在后且一致 */
+    return ps;                                /* 一致地重复声明 → 合法，不报错（选做 2.1）*/
 }
 
 /* ── CompSt / ExtDef / 顶层 ──────────────────────────────── */
