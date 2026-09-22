@@ -129,12 +129,16 @@ B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, in
 \begin{enumerate}
 \item \textbf{行为收敛在代码里的一个位置}，并写明「这是第 N 条，要求书未规定」
 \allowbreak：\code{symConflictCode()}（1）\allowbreak、\code{checkCondition()}（2）\allowbreak、
-\textbf{那一处} \code{scopeEnter} 调用（3、4）\allowbreak、\code{useStructTag()}（5）\allowbreak、
-\code{checkSubscript()}（6）\allowbreak、\code{symEnter} 的返回值语义（7）\allowbreak、
+\code{analyzeExtDef} 的 \code{ED\_FUNC} 分支里\textbf{那一次} \code{scopeEnter()} 调用
+（3，必须落在登记函数名之后、登记形参之前）\allowbreak、
+\code{analyzeStructSpecifier} 里定义结构体那条路径上的 \code{symEnter()}（4，用的是
+\textbf{当前}作用域深度）\allowbreak、\code{analyzeStructSpecifier} 里
+\code{nchild == 2} 的那个分支（5）\allowbreak、\code{analyzeSubscript}（6）\allowbreak、
+\code{symEnter} 的返回值语义（7）\allowbreak、
 \code{checkable()} 毒化开关（8）\allowbreak、\code{report.c} 的同行去重（9）\allowbreak、
 \code{type.c} 的 \code{structEquivalence}（选做 2.3）。做不到这一点，
 它就会退化成散在代码里的偶然行为，改一条要通读全文。
-\item \textbf{各配一个专属用例}钉住当前行为（\code{Test/lab2/dec01}--\code{dec15}），
+\item \textbf{各配一个专属用例}钉住当前行为（\code{Test/lab2/dec01}--\code{dec17}），
 且自检脚本断言这些用例\textbf{必须存在} —— 否则改错一条决策不会有任何用例变红。
 \item \textbf{一张从症状反查决策的对照表}：
 \end{enumerate}
@@ -174,7 +178,12 @@ B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, in
 同一套思路也用在判分本身：每个官方样例配两个期望文件 —— \code{.exp} 钉我们自己的
 完整文本、\code{.pairs} 钉官方的「错误类型 + 行号」序列（要求书明说这是唯一评分标准），
 两者分开才能把「改了说明文字」与「错误类型/行号错了」分开暴露。最后一句方法论：本项目对
-\textbf{每一条判据}都做了变异测试 —— 把它改坏，必须有用例变红；据此发现并修复了六处
-「判据看似存在、实则没有判别力」的问题。
+\textbf{每一条判据}都做了变异测试 —— 把它改坏，必须有用例变红；据此发现并修复了
+「判据看似存在、实则没有判别力」的问题。举两个有名字的例子（取证见过程文档）：Task 4 的
+\code{scopeExit()} 摘链\textbf{当时没有任何断言看着} —— 原有的检查点全在
+\code{scopeExit()} 之后、此时 \code{curDepth == 0}，\code{symLookup} 的深度守卫自己就把
+残留过滤掉了，于是「退层不摘散列链」这个变异\textbf{存活}（补测后才杀死）；Task 8 的毒化
+探针\textbf{两个候选错误全落在同一行}（写成 \code{i = j + 1;}），被同行去重抑制，把毒化
+整个关掉也不变红 —— 必须拆到不同行（\code{i = 1} 换行 \code{+ j;}）才恢复判别力。
 
 \end{document}

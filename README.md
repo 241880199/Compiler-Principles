@@ -276,8 +276,12 @@ docs/           设计文档、实验报告与大纲（实验一、实验二各�
 
 仓库中**不含**任何构建产物（`*.o`、`lex.yy.c`、`syntax.tab.*`、`syntax.output`、
 `parser`、`cc`、单测可执行文件）与 PDF，均由 `.gitignore` 排除。实验二报告的
-`.tex` / `.md` 入库，**`.pdf` 不入库**（与实验一同规格）—— 需要时本地现生成
-（在临时目录里编译，免得 `aux`/`log` 落进仓库）：
+`.tex` / `.md` 入库，**`.pdf` 不入库**（与实验一同规格）。
+
+**如何生成报告 PDF**：报告 PDF 由 `docs/实验二报告.tex` 现场排版，工具是
+**`xelatex`**（本机只在 WSL 里装了 TeX Live）。必须**编译两遍** —— 第一遍之后
+版式（断行/页数）才收敛，只编一遍得到的页数不作数。为免 `aux`/`log` 落进仓库，
+在临时目录里编译再拷回：
 
 ```bash
 mkdir -p /tmp/rpt && cp docs/实验二报告.tex /tmp/rpt/ && cd /tmp/rpt \

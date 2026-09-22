@@ -167,9 +167,16 @@ static Type analyzeExp(Node *n) {
         if (isTok(c0, "FLOAT")) return typeBasic(BT_FLOAT);
         {
             SymEntry *e = symLookup(c0->lexeme);   /* Exp : ID */
-            if (!e || e->kind == SYM_FUNC) {
-                /* 函数名出现在变量位置：要求书的 17 种里没有对应码，
-                 * 与"变量在使用时未定义"归为同类，报错误 1。 */
+            /* 只有**变量**能出现在变量位置。函数名与结构体名都不是变量：
+             * 要求书的 17 种里没有"名字存在但不是变量"的专用码，故与"变量在使用时
+             * 未定义"归为同类，报错误 1（错误 2 管"调用时"、10/13 管"下标/取域"，
+             * 都不是这里的场景）。
+             * ⚠️ 判据必须是 `kind != SYM_VAR`，**不能**写成 `kind == SYM_FUNC`：
+             * 那样 SYM_STRUCT 会落进下面的 `return e->type`，把结构体类型当成这个
+             * 表达式的类型 —— `A;`（A 是结构体）一条错误都不报，`y = A;` 也会把
+             * 错误 1 换成一条下游的类型错 5。`Test/lab2/dec16_structname_as_exp.cmm`
+             * 钉的就是这两点。 */
+            if (!e || e->kind != SYM_VAR) {
                 semErr(1, nodeLine(c0), "Undefined variable \"%s\"", c0->lexeme);
                 return typeUnknown();
             }

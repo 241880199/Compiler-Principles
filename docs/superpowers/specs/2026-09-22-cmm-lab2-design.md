@@ -421,8 +421,8 @@ scopeExit()
 | 2 | `if`/`while` 条件不是 `int` | 报**错误 7** | `semantic.c` 的 `checkCondition()` | `Test/lab2/dec02_condnotint.cmm` |
 | 3 | 形参与函数体是否同作用域 | **同作用域**（`int f(int i){int i;}` 报错误 3） | `semantic.c` 处理 `ED_FUNC` 的那**一个分支**（是否再 `scopeEnter`） | `Test/lab2/dec03_paramscope.cmm` |
 | 4 | 局部 `struct A{...} v;` 的结构体名注册层级 | **当前作用域** | `semantic.c` 定义结构体那一个函数（`symEnter` 时用不用当前深度） | `Test/lab2/dec04_localstruct.cmm` |
-| 5 | `struct Undefined;`（无变量） | **报错误 17** | `semantic.c` 的 `useStructTag()` | `Test/lab2/dec05_undefonly.cmm` |
-| 6 | `a[b]` 其中 `b` 是 `int` **数组** | 报**错误 12**（专项优先于通则 7） | `semantic.c` 的 `checkSubscript()` | `Test/lab2/dec06_arrindex.cmm` |
+| 5 | `struct Undefined;`（无变量） | **报错误 17** | `semantic.c` `analyzeStructSpecifier` 里 `nchild == 2` 的 `StructSpecifier : STRUCT Tag` 分支（看到 `STRUCT Tag` 就查表、查不到就报，故"无变量"也照样报） | `Test/lab2/dec05_undefonly.cmm` |
+| 6 | `a[b]` 其中 `b` 是 `int` **数组** | 报**错误 12**（专项优先于通则 7） | `semantic.c` 的 `analyzeSubscript`（下标类型判定用下标专项错误 12、而非通则 7） | `Test/lab2/dec06_arrindex.cmm` |
 | 7 | 重复定义/重复域名后保留哪一个 | **保留最早那个**，重复的报错并丢弃 | `symtab.c` `symEnter` 的返回值语义（"已存在"由调用方决定弃新弃旧） | `Test/lab2/dec07_keepfirst.cmm` |
 | 8 | 未定义名字引发的连锁类型错 | **`UNKNOWN` 毒化** | `type.c` `typeEqual` 开头一处 + `semantic.c` 中"查不到→返回 `UNKNOWN`"的几处 | `Test/lab2/dec08_poison.cmm` |
 | 9 | 同一行多条错误 | **留最先检出的那条** | `report.c` 一处（见 §10.2） | `Test/lab2/dec09_sameline.cmm` |

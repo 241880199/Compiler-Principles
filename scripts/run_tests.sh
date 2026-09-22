@@ -119,14 +119,18 @@ fi
 # 否则"改错一条决策"将没有任何用例能发现（实验一 crlf.cmm 那次同类：
 # 防线静默消失、全部用例照过）。
 #
-# **名单已是全量 16 个**（Task 11 Step 5 由 5 个扩到 16 个）。历史：Task 10 落地时
-# 只列已存在的 5 个（dec02/dec03/dec08/dec10/dec14）—— 那个"只列已存在的"状态
-# 是当时的**权宜**，理由记载在 task-10-report.md；本任务建齐其余 11 个后即扩到全量。
+# **名单已是全量 18 个**（Task 11 Step 5 由 5 个扩到 16 个；终审 Task 12 再加
+# dec16/dec17 两个"漏报修复"的守卫）。历史：Task 10 落地时只列已存在的 5 个
+# （dec02/dec03/dec08/dec10/dec14）—— 那个"只列已存在的"状态是当时的**权宜**，
+# 理由记载在 task-10-report.md；Task 11 建齐其余 11 个后即扩到全量。
 # 名单比文件多一个就会报红（这正是这条断言的作用），所以扩名单必须与建用例同一次落地。
 #
 # 已知的两个"既有、但不在计划 Task 11 创建清单里"的用例（**不要重复创建**）：
 #   dec08_poison            Task 8 修缺陷时补的
 #   dec14_rejecteddef_params Task 7 修缺陷时补的
+# Task 12 新增的两个（终审发现"修了但没有用例守护"）：
+#   dec16_structname_as_exp 结构体名出现在变量位置 ⇒ 必须报错误 1（修前一条都不报）
+#   dec17_callorder         调用名检查先于收集实参 ⇒ `inc(j)` 两者都未定义时出 2@3（还原顺序则出 1@3）
 #
 # 用例名 → 决策编号：#1 名字空间冲突 #2 条件非 int #3 形参作用域 #4 局部结构体
 #                   #5 只有未定义结构体 #6 下标是数组 #7 保留最早 #8 UNKNOWN 毒化
@@ -143,7 +147,7 @@ for d in dec01_namekind dec02_condnotint dec03_paramscope dec04_localstruct \
          dec05_undefonly dec06_arrindex dec07_keepfirst dec08_poison \
          dec09_sameline dec09b_nonmono dec10_useorder dec11_declconflict \
          dec12_decl_ok_conflict dec13_mutualstruct dec14_rejecteddef_params \
-         dec15_iforder; do
+         dec15_iforder dec16_structname_as_exp dec17_callorder; do
     if [ ! -f "Test/lab2/$d.cmm" ]; then
         # 措辞刻意**不**指向设计文档 §8：名单里 dec11..dec15 本就不在 §8 的十条表里
         # （它们是"已有规则在边界上的钉"，见上）。把排查者引到错误文档比不指路更坏。
@@ -282,7 +286,11 @@ if [ -f syntax.output ]; then
     # （state 编号大小写用 [Ss] 兼容 3.0.4）。
     n=$(grep -cE '^[Ss]tate [0-9]+ conflicts:' syntax.output)
     if [ "$n" -ne 3 ]; then
-        echo "FAIL  期望恰好 3 个冲突 state（State 27、32 来自 Def : error，State 114 是悬空 else），实测 $n 个"
+        # ⚠ **消息里不写 state 编号**：这条哨兵只数个数、**不校验编号**，所以编号
+        # 一旦漂移（改文法、换 bison 版本），`n -ne 3` 仍然可能不触发、而消息会把排查者
+        # 指向一个**错的** state —— `113/114` 那个错号当年就是这么潜伏至今的。
+        # 具体归属见本块上方注释（那里的编号由 Task 6 实测校正过），消息只做指路。
+        echo "FAIL  期望恰好 3 个冲突 state（归属见本块上方注释：Def : error 引起的两处，加悬空 else），实测 $n 个"
         grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
         fail=$((fail + 1))
     elif [ "$(grep -cE '^[Ss]tate [0-9]+ conflicts: 1 shift/reduce$' syntax.output)" -ne 3 ]; then
@@ -294,6 +302,16 @@ else
     echo "FAIL  未找到 syntax.output —— 冲突数断言无法执行"
     echo "      （它由 bison -v 生成。脚本开头已确认 ./parser 存在，而 test 目标依赖"
     echo "        parser，故该文件本应存在；缺失说明构建链被绕过）"
+    fail=$((fail + 1))
+fi
+
+# ── 文档里的 `X()` 必须真实存在 ────────────────────────────────
+# 抽成独立脚本（它不需要 ./parser，也不该与用例计数混在一起），由这里调用 ——
+# 于是"改完文档顺手跑一下自检"就能发现悬空名字，不必记得另跑一条命令。
+# 背景：交付的 PDF 里曾把决策 5、6 的开关写成 `useStructTag()` / `checkSubscript()`，
+# 而这两个名字在 src/ 里**不存在**（真实位置见 docs/实验二报告.md 亮点 3）。
+# 那类错**可以自动抓**，抓不到就会一路进 PDF。
+if ! bash scripts/check_docs.sh; then
     fail=$((fail + 1))
 fi
 
