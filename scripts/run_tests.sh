@@ -8,13 +8,26 @@ if [ ! -x ./parser ]; then
     echo "错误：未找到 ./parser，请先运行 make" >&2
     exit 1
 fi
+
+# 实验一的回归驱动**不在** `make` 的默认目标里（理由见 Makefile：`make` 必须能在
+# 只有 src/ + Makefile 的包里独立跑通，而 Test/regress/ 是开发期目录）。故由本脚本
+# 自己把它建出来 —— 缺失或过期都会重新生成，`make` 对已最新的目标什么都不做。
+# 构建失败必须**响亮退出**：静默跳过会让实验一那 30 个用例无声消失，
+# 而脚本仍打印"通过 N 个，失败 0 个"。
+if ! make Test/regress/driver; then
+    echo "错误：无法构建 Test/regress/driver —— 实验一的回归用例无法运行" >&2
+    echo "      （它需要 Test/regress/driver.c 及其依赖；请确认仓库完整）" >&2
+    exit 1
+fi
+# 构建成功仍要复核一次可执行位：上面的 `make` 有可能判定"已是最新"而什么都没做。
 if [ ! -x Test/regress/driver ]; then
-    echo "错误：未找到 Test/regress/driver，请先运行 make" >&2
+    echo "错误：未找到 Test/regress/driver —— 实验一的回归用例无法运行" >&2
     exit 1
 fi
 
 pass=0
 fail=0
+lab2_ran=0
 tmp=$(mktemp)
 err=$(mktemp)
 trap 'rm -f "$tmp" "$err"' EXIT
@@ -67,9 +80,12 @@ for cmm in Test/sample/*.cmm Test/err/*.cmm; do
 done
 
 # Test/lab2 由后续任务建立；不存在时整段跳过，实验一的 30 个用例仍照跑。
+# `lab2_ran` 数的是**本循环真正跑到**的用例数（不是 pass）：见下方与 `pass -eq 0`
+# 并列的断言 —— 目录在而一个用例都没跑成，说明这半边哨兵已失效。
 if [ -d Test/lab2 ]; then
     for cmm in Test/lab2/*.cmm; do
         [ -e "$cmm" ] || continue
+        lab2_ran=$((lab2_ran + 1))
         runner=./parser
         check_one "$cmm" "$runner"
     done
@@ -119,6 +135,17 @@ fi
 # 否则 Test/ 被移动或清空时会打印 "通过 0 个，失败 0 个" 并退出 0。
 if [ "$pass" -eq 0 ]; then
     echo "FAIL  没有任何用例通过（0 个）—— 检查 Test/ 目录是否被移动或清空"
+    fail=$((fail + 1))
+fi
+
+# ── Test/lab2 存在时至少跑了一个用例 ──────────────────────────
+# 上面那条只管 `pass`。**实验二这半边需要单独一条**：`if [ -d Test/lab2 ]` 只保证
+# 目录在，目录**空着**（或只有非 .cmm 文件）时循环仍会迭代那个字面 glob
+# `Test/lab2/*.cmm`、每次都在 `[ -e "$cmm" ] || continue` 处跳出 —— 一个用例都没跑，
+# 却照样打印"通过 30 个，失败 0 个"并退出 0。实验一的 30 个用例照过，
+# 掩盖了实验二哨兵**整体失效**这件事。故这里数的是"跑到几个"，不是"过了几个"。
+if [ -d Test/lab2 ] && [ "$lab2_ran" -eq 0 ]; then
+    echo "FAIL  存在 Test/lab2 但一个用例都没跑成 —— 这半边哨兵已失效"
     fail=$((fail + 1))
 fi
 

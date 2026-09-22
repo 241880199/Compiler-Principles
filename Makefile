@@ -6,11 +6,17 @@ CFLAGS = -std=c99 -Wall -g -Isrc
 SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c
 OBJS   = $(SRCS:.c=.o)
 
-# 默认目标：`make` 必须同时产出 ./parser 与 Test/regress/driver。
-# scripts/run_tests.sh 开头硬性要求这两个可执行文件都在（缺任一即 exit 1），
-# 而 make 的默认目标只是**第一个**目标 —— 不显式给出 all 的话 `make` 只建 parser，
-# 紧接着的 `bash scripts/run_tests.sh` 会立刻报"未找到 Test/regress/driver"。
-all: parser Test/regress/driver
+# 默认目标**只有** ./parser。
+#
+# 这里刻意不带上 Test/regress/driver：那个驱动的源码在 `Test/regress/`，是**开发期目录**，
+# 交付给评分方的包里只有 src/ + Makefile（外加 Test/sample、Test/err 作样例）。
+# 一旦把 driver 挂进默认目标，凡是没有 Test/regress/driver.c 的包，`make` 会直接
+# 因 "No rule to make target 'Test/regress/driver.o'" 失败 —— **整个程序都编译不出来**。
+# 这与下方"没有 test 目标"的理由是同一条原则：`make` 必须能独立跑通。
+#
+# 需要回归驱动的是 scripts/run_tests.sh，它**自己**调 `make Test/regress/driver`
+# 并在构建失败时响亮退出（见该脚本），把这份依赖留在开发期工具里。
+all: parser
 
 parser: $(OBJS) syntax.tab.o lex.yy.o
 	$(CC) -o $@ $^ -lfl
@@ -69,8 +75,11 @@ lexer-test: Test/unit/test_lexer
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
 # `make` 本身必须能独立跑通，故把测试入口交给文档说明，不做成 make 目标。
+#
+# 同一条原则也适用于 `Test/regress/driver`：它是**开发期**的回归驱动，源码在
+# Test/regress/ 下，故同样**不进 `all`**（见文件开头的说明）。脚本要它时自己会建。
 # 自检请直接：
-#     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 是否存在
+#     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test
 clean:
