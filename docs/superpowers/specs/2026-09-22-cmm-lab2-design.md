@@ -408,7 +408,7 @@ scopeExit()
 
 | # | 情形 | 暂定行为 | **开关位置** | **专属用例** |
 |---|---|---|---|---|
-| 1 | 变量名与函数名冲突（错误 3/4/16 覆盖不到这个组合） | 单一名字空间；按**后定义者的种类**报码（变量→3、结构体→16、函数→4） | `symtab.c` `symEnter` 里一张 `(已有 kind, 新 kind) → 码` 的小表 | `Test/lab2/dec01_namekind.cmm` |
+| 1 | 变量名与函数名冲突（错误 3/4/16 覆盖不到这个组合） | 单一名字空间；按**后定义者的种类**报码（变量→3、结构体→16、函数→4） | `symtab.c` 的 `symConflictCode(新 kind)` —— **只按后定义者的种类，不看已有条目的种类** | `Test/lab2/dec01_namekind.cmm` |
 | 2 | `if`/`while` 条件不是 `int` | 报**错误 7** | `semantic.c` 的 `checkCondition()` | `Test/lab2/dec02_condnotint.cmm` |
 | 3 | 形参与函数体是否同作用域 | **同作用域**（`int f(int i){int i;}` 报错误 3） | `semantic.c` 处理 `ED_FUNC` 的那**一个分支**（是否再 `scopeEnter`） | `Test/lab2/dec03_paramscope.cmm` |
 | 4 | 局部 `struct A{...} v;` 的结构体名注册层级 | **当前作用域** | `semantic.c` 定义结构体那一个函数（`symEnter` 时用不用当前深度） | `Test/lab2/dec04_localstruct.cmm` |
