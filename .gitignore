@@ -14,6 +14,7 @@ syntax.output
 Test/unit/test_tree
 Test/unit/test_lexer
 Test/unit/test_type
+Test/unit/test_nodetype
 Test/regress/driver
 
 # ── 编辑器 / 系统 ─────────────────────────────────────────────

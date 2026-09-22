@@ -1,11 +1,39 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdarg.h>
 #include "tree.h"
 #include "util.h"
 
+/* 名字 → NodeType。**这是唯一需要与 syntax.y 同步的地方**：
+ * syntax.y 里新增了非终结符而忘了在这里登记，newNode 会 abort（大声失败，不静默）。 */
+static const struct { const char *name; NodeType t; } nodeTypeTable[] = {
+    {"Program", NT_PROGRAM},         {"ExtDefList", NT_EXTDEFLIST},
+    {"ExtDef", NT_EXTDEF},           {"ExtDecList", NT_EXTDECLIST},
+    {"Specifier", NT_SPECIFIER},     {"StructSpecifier", NT_STRUCTSPECIFIER},
+    {"OptTag", NT_OPTTAG},           {"Tag", NT_TAG},
+    {"VarDec", NT_VARDEC},           {"DecList", NT_DECLIST},
+    {"Dec", NT_DEC},                 {"DefList", NT_DEFLIST},
+    {"Def", NT_DEF},                 {"FunDec", NT_FUNDEC},
+    {"VarList", NT_VARLIST},         {"ParamDec", NT_PARAMDEC},
+    {"CompSt", NT_COMPST},           {"StmtList", NT_STMTLIST},
+    {"Stmt", NT_STMT},               {"Exp", NT_EXP},
+    {"Args", NT_ARGS},
+};
+
+static NodeType lookupNodeType(const char *name) {
+    size_t i;
+    for (i = 0; i < sizeof nodeTypeTable / sizeof nodeTypeTable[0]; i++)
+        if (strcmp(name, nodeTypeTable[i].name) == 0) return nodeTypeTable[i].t;
+    fprintf(stderr, "internal error: unknown nonterminal \"%s\" in newNode()\n", name);
+    fprintf(stderr, "              (若刚在 syntax.y 里加了新非终结符，请同步 nodeTypeTable)\n");
+    abort();
+}
+
 Node *newToken(const char *name, int line, const char *lexeme) {
     Node *n = xmalloc(sizeof(Node));
     n->kind   = NODE_TOKEN;
+    n->type   = NT_NONE;
     n->name   = xstrdup(name);
     n->line   = line;
     n->lexeme = xstrdup(lexeme);
@@ -20,6 +48,7 @@ Node *newNode(const char *name, int nchild, ...) {
     int i;
 
     n->kind   = NODE_GRAMMAR;
+    n->type   = lookupNodeType(name);
     n->name   = xstrdup(name);
     n->line   = 0;          /* 行号一律由 nodeLine() 推导，不在此处指定 */
     n->lexeme = NULL;
