@@ -117,6 +117,40 @@ static Type analyzeFieldAccess(const Node *n);
 static Type analyzeAssign(const Node *n);
 static Type analyzeBinary(const Node *n);
 
+/* ── 分派兜底守卫（默认关）────────────────────────────────
+ * 下面三处"其余情况"的兜底分支在当前文法下**不可达**：没有 `Exp : error` 产生式，
+ * 且 main 只在无语法错误时才调语义分析（ExtDef 的 ED_ERROR 分支同理，见上方注释）。
+ * 但将来若加入新的 3 子结点 / 4 子结点产生式而忘了在这里加显式分支，兜底会**静默**
+ * 把新形态当成二元运算或下标处理 —— 这类缺陷既不改输出也无警告。故留一个调试开关：
+ * `-DCMM_DEBUG_DISPATCH` 把"落入兜底"变成响亮失败。**默认必须是关的** —— 判分要求
+ * stderr 上不能有任何输出（见 scripts/run_tests.sh 的 stderr 断言）。
+ * 这里刻意**不**用 C 标准 `assert`：它在未定义 NDEBUG 时是默认生效的，一旦我对文法的
+ * 穷举有疏漏，就会在判分现场 abort 掉整份输出 —— 代价远大于收益。
+ *
+ * ⚠️ 守卫的**判据必须是"形态不属于已知的那几种"**，不能只写"走到了兜底分支" ——
+ * 兜底分支本身是**合法路径**（`Exp PLUS Exp` 就该走 `analyzeBinary`）。实测教训：
+ * 第一版只调 `dispatchBug("nchild==3 fallthrough")`，`make CFLAGS=…-DCMM_DEBUG_DISPATCH`
+ * 跑 dec08_poison 立刻 abort 在 `1 + j` 上。故下面用 `isBinaryOpTok` / `isTok(c1,"LB")`
+ * 把"已知形态"逐一排除。 */
+#ifdef CMM_DEBUG_DISPATCH
+static void dispatchBug(const char *what) {
+    fprintf(stderr, "internal: unexpected Exp shape in analyzeExp: %s\n", what);
+    abort();
+}
+#else
+static void dispatchBug(const char *what) { (void)what; }
+#endif
+
+/* nchild==3 的二元运算，child[1] 必是这七个运算符终结符之一（词法单元名取自 lexical.l）。
+ * 它只服务于上面的调试守卫，故单独一个函数而不是塞进 `if` 的一长串 `&&`。 */
+static int isBinaryOpTok(const Node *n) {
+    static const char *ops[] = { "AND", "OR", "RELOP", "PLUS", "MINUS", "STAR", "DIV" };
+    int i;
+    for (i = 0; i < (int)(sizeof ops / sizeof ops[0]); i++)
+        if (isTok(n, ops[i])) return 1;
+    return 0;
+}
+
 /* 分派：先按**子结点个数**，再按子结点里词法单元的名字。
  *   nchild==1  Exp : ID | INT | FLOAT
  *   nchild==2  Exp : MINUS Exp | NOT Exp
@@ -165,12 +199,24 @@ static Type analyzeExp(Node *n) {
             return analyzeFieldAccess(n);
         if (isTok(c1, "ASSIGNOP"))                 /* Exp ASSIGNOP Exp */
             return analyzeAssign(n);
+        /* 兜底：3 子结点里除掉上面四种形态，只剩二元运算（child[1] 必是运算符终结符）。
+         * **新增 3 子结点产生式时必须在这里加显式分支**，否则会静默按算术处理。 */
+        if (!isBinaryOpTok(c1))
+            dispatchBug("nchild==3 fallthrough to analyzeBinary: child[1] is not an operator");
         return analyzeBinary(n);                   /* 其余二元运算 */
     case 4:
         if (c0->kind == NODE_TOKEN)                /* ID LP Args RP */
             return analyzeCall(n, /*hasArgs=*/1);
+        /* 兜底：c0 不是终结符 ⇒ 只剩 `Exp LB Exp RB`（child[1] 必是 `[`）。新增 4 子结点
+         * 产生式时同上。 */
+        if (!isTok(c1, "LB"))
+            dispatchBug("nchild==4 fallthrough to analyzeSubscript: child[1] is not LB");
         return analyzeSubscript(n);                /* Exp LB Exp RB */
     }
+    /* 兜底：Exp 只有 1..4 子结点这 18 种产生式（无 `Exp : error`，且 main 只在
+     * 无语法错误时才调用本函数），故这一行不可达。留着只是为了 `-Wswitch` 与
+     * 防御性返回；真要走到这里，说明分派的前提被破坏了。 */
+    dispatchBug("Exp with neither 1, 2, 3 nor 4 children");
     return typeUnknown();
 }
 
@@ -288,16 +334,36 @@ static Type *collectArgTypes(const Node *args, int *nOut) {
     return arr;
 }
 
+/* ── 累加式拼接（消息构造专用）────────────────────────────
+ * `snprintf` 的返回值是**本该写多长**，不是实际写进去多少。所以累加量 off 一旦
+ * 越过 n（实参/形参很多、或某个类型名很长时），后面那句 `(size_t)(n - off)` 就把
+ * 负的 int 转成了巨大的无符号数，`buf + off` 于是写到栈上别处 —— 缓冲区越界写。
+ * 两处消息构造（形参侧 sigString、实参侧 analyzeCall）都走这里，越界只在**这一处**收口。
+ *
+ * 收口规则：off 一旦达到 `n - 1`（此时 buf+off 只剩 1 字节，任何 snprintf 都只能
+ * 写一个 NUL），后续拼接直接跳过。正常大小的输入 off 恒小于 n-1，故**消息逐字节不变**；
+ * 边界输入下得到的是"截断且 NUL 收尾"的串，不会越界。 */
+static int appendf(char *buf, int n, int off, const char *fmt, ...) {
+    va_list ap;
+    int r;
+    if (off >= n - 1) return n - 1;
+    va_start(ap, fmt);
+    r = vsnprintf(buf + off, (size_t)(n - off), fmt, ap);
+    va_end(ap);
+    off += r;
+    return off > n - 1 ? n - 1 : off;
+}
+
 /* "func(int, float)" 形式的签名文本（形参侧）。 */
 static void sigString(const SymEntry *e, const char *name, char *buf, int n) {
     char one[128];
     int i, off = 0;
-    off += snprintf(buf + off, (size_t)(n - off), "%s(", name);
+    off = appendf(buf, n, off, "%s(", name);
     for (i = 0; i < e->nparams; i++) {
         typeToString(e->params[i], one, sizeof one);
-        off += snprintf(buf + off, (size_t)(n - off), "%s%s", i ? ", " : "", one);
+        off = appendf(buf, n, off, "%s%s", i ? ", " : "", one);
     }
-    snprintf(buf + off, (size_t)(n - off), ")");
+    appendf(buf, n, off, ")");
 }
 
 static Type analyzeCall(const Node *n, int hasArgs) {
@@ -307,8 +373,12 @@ static Type analyzeCall(const Node *n, int hasArgs) {
     Type *args = NULL;
     int nargs = 0, i, bad = 0;
 
-    if (hasArgs) args = collectArgTypes(n->child[2], &nargs);
-
+    /* ⚠️ **两条名字检查必须在收集实参之前**（设计文档 §7.1 的调用行：11 → 2 → 9，命中即短路）。
+     * 放在后面会报**较不本质**的那个错：`inc(j)`（`inc` 与 `j` 都未定义）会先掉进实参
+     * 收集、报出 `j` 的错误 1，而错误 2 因为同一行去重被抑制 —— 于是这个"两者都未定义"
+     * 的输入只剩一条错误 1，与"只报较本质那个错误"（§5.3）相反。顺序对调后：
+     * 名字不存在就报 2 并短路，**根本不去碰实参**（这同时也省掉了那次分配）。
+     * 错误 9 的路径不受影响 —— 它是最后一个检查，两者都用得着实参表。 */
     if (!e) {
         semErr(2, nodeLine(idNode), "Undefined function \"%s\"", name);
         return typeUnknown();
@@ -320,11 +390,20 @@ static Type analyzeCall(const Node *n, int hasArgs) {
         return typeUnknown();
     }
 
+    if (hasArgs) args = collectArgTypes(n->child[2], &nargs);
+
     if (nargs != e->nparams) {
         bad = 1;
     } else {
         for (i = 0; i < nargs; i++) {
-            if (!checkable(args[i])) return e->type;   /* 毒化：无法判定，静默 */
+            /* 毒化（决策 8）：实参类型 UNKNOWN ⇒ 无法判定，静默 —— 但**返回 UNKNOWN**。
+             * 返回 `e->type` 会让调用表达式"看起来"有一个确定的类型，UNKNOWN 就此
+             * 止步，下游检查不再静默：`float x; x =` 换行 `f(k);`（`k` 未定义）会在
+             * 错误 1 之外**多报一条错误 5**（§5.3："含 UNKNOWN 的表达式，其类型继续
+             * 传播 UNKNOWN"）。
+             * ⚠️ 别顺手把下面 `if (bad)` 里那个 `return e->type` 也改掉 —— 那个是**故意**
+             * 的（§5.3 的例外，`dec09b_nonmono.cmm` 靠它同时报 9 与 5）。 */
+            if (!checkable(args[i])) return typeUnknown();
             if (!typeEqual(args[i], e->params[i])) bad = 1;
         }
     }
@@ -336,13 +415,13 @@ static Type analyzeCall(const Node *n, int hasArgs) {
         char s1[256], s2[256];
         int off = 0;
         sigString(e, name, s1, sizeof s1);
-        off += snprintf(s2 + off, sizeof s2 - (size_t)off, "(");
+        off = appendf(s2, sizeof s2, off, "(");
         for (i = 0; i < nargs; i++) {
             char one[128];
             typeToString(args[i], one, sizeof one);
-            off += snprintf(s2 + off, sizeof s2 - (size_t)off, "%s%s", i ? ", " : "", one);
+            off = appendf(s2, sizeof s2, off, "%s%s", i ? ", " : "", one);
         }
-        snprintf(s2 + off, sizeof s2 - (size_t)off, ")");
+        appendf(s2, sizeof s2, off, ")");
         semErr(9, nodeLine(idNode),
                "Function \"%s\" is not applicable for arguments \"%s\"", s1, s2);
     }
