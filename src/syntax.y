@@ -154,7 +154,11 @@ ParamDec
    弹栈到此并在 `}` 处同步，避免一路吞到文件尾。 */
 CompSt
   : LC DefList StmtList RC      { $$ = newNode("CompSt", 4, $1, $2, $3, $4); }
-  | error RC                    { $$ = newNode("CompSt", 2, $1, $2); }
+/* 块层出口**不带同步符**：带同步符时 Bison 会先丢弃词法单元直到 `}` 出现才归约，
+   把块内其后的定义整段吃掉，同一份文件因此少报错误（实测：`if (1 < 2` 缺右括号
+   之后紧跟的缺分号再也报不出来）。裸 `error` 移进后立即归约、不丢任何前瞻。
+   改动只加 1 条产生式，冲突 state 数仍是 3。 */
+  | error                       { $$ = newNode("CompSt", 1, $1); }
   ;
 
 StmtList
