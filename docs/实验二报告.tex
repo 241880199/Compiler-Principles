@@ -1,0 +1,180 @@
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.2cm,top=1.8cm,bottom=1.8cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\normalsize,
+  columns=flexible,
+  breaklines=true,
+  frame=single,
+  framesep=3pt,
+  xleftmargin=4pt,
+  aboveskip=5pt,
+  belowskip=5pt,
+  keepspaces=true,
+}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{3pt}
+\linespread{1.12}
+\renewcommand{\arraystretch}{1.15}
+\emergencystretch=1.5em
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+{\large\bfseries 实验二：C{-}{-} 语义分析与类型检查}\\[3pt]
+张苏楠\quad 241880199
+\end{center}
+
+\textbf{工具版本}：gcc \textbf{11.4.0}、GNU flex \textbf{2.6.4}、GNU bison
+\textbf{3.8.2}、GNU make \textbf{4.3}（Ubuntu 22.04）。评分环境按实验二要求书取
+bison \textbf{3.5.1}（focal），\textbf{已实机跑完整套用例通过}；实验一要求书写的是
+3.0.4，两份要求书互相矛盾，我们取严者、两版通吃（第二节）。
+
+\section*{一、实现的功能，以及如何实现}
+
+{\normalsize
+\setlength{\parindent}{0pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}m{2.9cm}m{13.1cm}@{}}
+\hline
+\textbf{功能} & \textbf{如何实现} \\
+\hline
+19 个错误码\par（必做 17 + 选做 2.1 的 18、19） & 前端仍是实验一的 Flex + Bison（文法只加了一条产生式），\textbf{语义分析完全手写}：在实验一建好的语法树上做一遍后序遍历。三个模块单向依赖 —— \code{semantic.c}（遍历与 19 种检查）$\to$ \code{symtab.c}（符号表）$\to$ \code{type.c}（类型表示与等价）。\\
+\hline
+错误 1/2 的\textbf{连锁抑制} & 名字查不到时返回 \code{UNKNOWN} 单例并报 1/2；\code{typeEqual(UNKNOWN, 任何)} 为真，各检查点遇 \code{UNKNOWN} 一律静默。否则 \code{j = i + 1;}（\code{j} 未定义）会附带一条类型错 —— 要求书只考察「较本质」的那条。\\
+\hline
+嵌套作用域\par（选做 2.2） & 符号表是散列 + 每层一条链表；查表沿链由内向外，返回\textbf{第一个 \code{depth} $\le$ 当前深度}的项 —— 这就是「遮蔽」。\code{scopeEnter}/\code{scopeExit} 全项目只有两处调用点（函数体、语句块），形参与函数体同层。\\
+\hline
+函数声明\par（选做 2.1） & 声明的形参收集与定义的走\textbf{同一条}路径，比较（返回类型, 形参数, 形参类型表）；文件末尾遍历全局链表报「声明了但从未定义」（错误 18），行号取\textbf{首次}声明处。\\
+\hline
+结构等价\par（选做 2.3） & 忽略域名、按位置比域的类型，域数量必须相同；数组整体作为一个（基类型, 维数）单位比较，\textbf{不展开}（为什么必须如此，见第三节）。\\
+\hline
+输出，与和实验一的关系 & 词法/语法错仍报 \code{A}/\code{B}；\textbf{完全无错时不输出任何内容}（不再打印语法树）。语义报告走 \code{reportSemanticError}，它维护一个\textbf{已打印过的行号集合}，重复行直接丢弃（判据无条件，不依赖「相邻」）；实验一的 A/B 路径原样保留，两条路径的去重状态互不干扰。实验一的 30 个用例改由回归驱动 \code{Test/regress/driver} 跑，作语法层回归网。\\
+\hline
+\end{tabular}}
+
+\section*{二、如何编译}
+
+\begin{lstlisting}[language=bash]
+sudo apt-get install -y flex bison gcc make
+make clean && make          # 生成 ./parser（同时生成同内容的 ./cc）
+./parser <文件>              # 无错时不输出任何内容；有错时打印错误信息
+bash scripts/run_tests.sh   # 可选自检：Test/ 下 73 个用例逐字节比对
+\end{lstlisting}
+
+编译方式与实验一完全相同（同一份 Makefile），另有 \code{make type-test} 等六个单测
+目标。关于 Bison 版本：两份要求书互相矛盾（实验一写 3.0.4、实验二写 3.5.1，而两处都
+标注「同实验一」），处置是\textbf{取严者} —— 文法里不写任何 3.1+ 才有的东西（不用
+\code{\%define parse.error detailed}、不用 \code{\%union}）。实测 \textbf{3.8.2 /
+3.5.1 / 3.0.4 三版下 73 个用例都是 73/0}，且三版的冲突 state 编号与状态项逐字相同：
+\textbf{编号只取决于文法、与 Bison 版本无关}。
+
+\section*{三、亮点 1：把「不展开数组」从要求书的例子里反推出来}
+
+要求书 2.3 给了一对\textbf{结构等价}的例子（域名不同：\code{\{int x; float y;\}}
+$\equiv$ \code{\{int y; float z;\}}），又给了一对\textbf{不等价}的例子。后者初看
+令人费解：那两个结构体「看起来挺像」，凭什么不等价？把最自然的那种实现 —— 结构等价
+$=$ 把各域的类型\textbf{展开}成一个序列再逐位比较 —— 代入就明白了：
+
+\begin{lstlisting}[language=C]
+A = struct A { int a; struct { float f; int i; } b[10]; }  -> int, [float,int]x10  = 21 项
+B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, int  = 21 项
+\end{lstlisting}
+
+展开后 A 与 B \textbf{逐位完全相同}（\code{int==int}、\code{float==float}、\dots），
+于是会把要求书明确判定为\textbf{不等价}的一对判成等价。所以那句话不是修辞，它是在说
+「别展开」：A 的第 0 个域是 \code{int}、B 的第 0 个域是 \code{array}，\textbf{种类就
+已经不同}，立刻判出不等价。代码上它只是让结构等价逐个比较域的类型，而数组域整体走
+\code{typeEqual} 的数组分支（把整个数组当作一个不可分割的（基类型, 维数）单位）。
+
+值得注意的是，这对「不等价」的例子同时是「忽略域名」的独立佐证（它的两个结构体域名正是
+不同的），而「忽略域名」的直接佐证又只能来自那对「等价」的例子。\textbf{推理到这里才
+闭合}：两条规则互为对方的证据，任何一条单独看都像是凭空规定。
+
+\section*{四、亮点 2：一个端到端\textbf{测不出来}的 bug，决定了模块边界}
+
+\code{int a[10][2]} 的 \code{VarDec} 树是左递归的：
+\code{VarDec(VarDec(a) LB 10 RB) LB 2 RB} —— \textbf{最外层结点带的是最后一个方括号}。
+所以类型必须\textbf{从右往左}折叠；若照收集顺序从左折叠，得到的是
+\code{array(2, array(10, int))}：\textbf{维度顺序反了}。
+
+这个 bug 在本实验里\textbf{没有任何症状}：数组等价\textbf{忽略长度}，反了的数组与
+任何同维数组比较仍然「相等」；\textbf{维数没变}，于是错误 10（对非数组用 \code{[]}）
+的触发条件不变；错误 12 只看\textbf{下标}的类型，与数组本身是什么类型无关。也就是
+17 种检查\textbf{一条都发现不了它}，端到端用例全绿。
+
+唯一能钉住它的办法，是让类型模块\textbf{脱离词法/语法/符号表独立单测}，并且断言
+\textbf{具体的 \code{size} 值}（只查维数同样抓不到）。\code{make type-test} 干的就是
+这件事。这就是这条模块边界的由来：\code{type.c} \textbf{不依赖任何东西}（连符号表都
+不依赖），不是为了分层好看，而是因为\textbf{只有它能看见这个 bug}。一句话：
+\textbf{判别力的边界决定模块的边界} —— 一个错误若在高层没有任何可观测量，就只能靠
+把低层做成可独立测试的纯模块来发现。
+
+\section*{五、亮点 3：把「要求书没规定」的十条做成可单点翻转的开关}
+
+要求书与指导书对十种情形\textbf{都没有写}：变量名与函数名冲突报哪个码？\code{if} 的
+条件不是 \code{int} 报错误 7 还是别的？形参与函数体算不算同一个作用域？\code{a[b]}
+（\code{b} 是数组）报 12 还是 7？同一行出现两条错误留哪一条？这些都是\textbf{推不
+出来的}，两份文档里都没有依据。
+
+而实验二\textbf{有在线判分}：猜错的代价是当场丢分，且判分反馈通常只说「某个用例错」。
+所以我们不猜，把它做成\textbf{可收敛的}。每条必须满足三点，缺一不可：
+
+\begin{enumerate}
+\item \textbf{行为收敛在代码里的一个位置}，并写明「这是第 N 条，要求书未规定」
+\allowbreak：\code{symConflictCode()}（1）\allowbreak、\code{checkCondition()}（2）\allowbreak、
+\textbf{那一处} \code{scopeEnter} 调用（3、4）\allowbreak、\code{useStructTag()}（5）\allowbreak、
+\code{checkSubscript()}（6）\allowbreak、\code{symEnter} 的返回值语义（7）\allowbreak、
+\code{checkable()} 毒化开关（8）\allowbreak、\code{report.c} 的同行去重（9）\allowbreak、
+\code{type.c} 的 \code{structEquivalence}（选做 2.3）。做不到这一点，
+它就会退化成散在代码里的偶然行为，改一条要通读全文。
+\item \textbf{各配一个专属用例}钉住当前行为（\code{Test/lab2/dec01}--\code{dec15}），
+且自检脚本断言这些用例\textbf{必须存在} —— 否则改错一条决策不会有任何用例变红。
+\item \textbf{一张从症状反查决策的对照表}：
+\end{enumerate}
+
+{\normalsize
+\setlength{\parindent}{0pt}
+\begin{tabular}{@{}m{8.2cm}@{\hspace{8pt}}m{7.4cm}@{}}
+\hline
+\textbf{观测到的症状} & \textbf{最可能的决策} \\
+\hline
+未定义变量的表达式被多报了一条类型错 & 8（\code{UNKNOWN} 毒化）\\
+\hline
+同一行出现两条错误 & 9（同行只留最先检出的）\\
+\hline
+某个跨函数的同名局部变量被报重复定义 & 3 或 4（作用域划在哪一层）\\
+\hline
+\code{if (3.7)} 被报错 / 该报错却没报 & 2（条件必须是 \code{int}）\\
+\hline
+数组下标里放了个数组，报的码是 7 而不是 12 & 6（专项优先于通则）\\
+\hline
+结构体与变量同名时报的码不对 & 1（单一名字空间，按后定义者报码）\\
+\hline
+重复定义的变量，后续引用被解析到了后一个 & 7（保留最早那个）\\
+\hline
+\code{struct Undefined;}（无变量）没报 17 & 5（无变量也报）\\
+\hline
+使用了文件后面才定义的变量/函数 & 10（定义必须先于使用）\\
+\hline
+\end{tabular}}
+
+第 10 条要单独说：它的「开关」不是一行代码，而是\textbf{遍历结构本身}（单遍、不做
+预扫描），也是十条里唯一「判分若指向它、修复成本不对称」的一条（要改成一趟预扫描先
+收集全局名），所以它最需要这张表和那条用例。这张表才是整套做法的价值所在：判分反馈
+进来时（它只会说「某个用例错了」），它是\textbf{唯一能立刻定位到是哪条决策}的东西。
+把未知收敛成已知，靠的不是猜得准，而是\textbf{猜错时可查、可改、可验证}。
+
+同一套思路也用在判分本身：每个官方样例配两个期望文件 —— \code{.exp} 钉我们自己的
+完整文本、\code{.pairs} 钉官方的「错误类型 + 行号」序列（要求书明说这是唯一评分标准），
+两者分开才能把「改了说明文字」与「错误类型/行号错了」分开暴露。最后一句方法论：本项目对
+\textbf{每一条判据}都做了变异测试 —— 把它改坏，必须有用例变红；据此发现并修复了六处
+「判据看似存在、实则没有判别力」的问题。
+
+\end{document}

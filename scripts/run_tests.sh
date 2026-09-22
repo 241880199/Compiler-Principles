@@ -145,7 +145,9 @@ for d in dec01_namekind dec02_condnotint dec03_paramscope dec04_localstruct \
          dec12_decl_ok_conflict dec13_mutualstruct dec14_rejecteddef_params \
          dec15_iforder; do
     if [ ! -f "Test/lab2/$d.cmm" ]; then
-        echo "FAIL  决策用例缺失：Test/lab2/$d.cmm（设计文档 §8 的对应开关失去守护）"
+        # 措辞刻意**不**指向设计文档 §8：名单里 dec11..dec15 本就不在 §8 的十条表里
+        # （它们是"已有规则在边界上的钉"，见上）。把排查者引到错误文档比不指路更坏。
+        echo "FAIL  决策/边界用例缺失：Test/lab2/$d.cmm（这条钉没了守护 —— 改坏对应行为不会有任何用例变红）"
         fail=$((fail + 1))
     fi
     if [ ! -f "Test/lab2/$d.exp" ]; then
@@ -171,6 +173,14 @@ for p in lab2_undef_exp lab2_undef_func lab2_dupvar lab2_dupfunc \
          lab2_undefstruct \
          lab2_declok lab2_declnodef lab2_funcreuse lab2_shadow \
          lab2_structeq_ok lab2_structeq_bad; do
+    # 三样都要判：只有 `.pairs` 那一层被断言过，而 `.cmm` **不见了**同样是防线失效。
+    # 实测（Task 12）：把 lab2_dupvar.cmm 移走、留下 .exp 与 .pairs，循环不再迭代它、
+    # 脚本照旧打印「通过 72 个，失败 0 个」并退出 0 —— 官方样例静默少了一个，
+    # 而判分字段那层防护看似完好。与本文件其它"防线静默消失"断言防的是同一类失效。
+    if [ ! -f "Test/lab2/$p.cmm" ]; then
+        echo "FAIL  官方样例缺 .cmm：Test/lab2/$p.cmm（该样例已整体消失，判分字段那一层防线随之失效）"
+        fail=$((fail + 1))
+    fi
     if [ ! -f "Test/lab2/$p.pairs" ]; then
         echo "FAIL  官方样例缺 .pairs：Test/lab2/$p.pairs（判分字段那一层防线已静默失效）"
         fail=$((fail + 1))

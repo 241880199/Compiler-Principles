@@ -43,10 +43,16 @@ ExtDefList
    全部错误）。写法与 `Stmt : error SEMI` 完全一致（含 newNode 元数约定）。
 
    **实测（bison 3.8.2 与 3.0.4 两版）：冲突 state 数都仍是 1、内容都仍是那处悬空
-   else**，只有编号从 `State 111` 变成 `State 113` —— 那是多了一条产生式、多出两个
-   new state 造成的，**不是多了一个冲突**。所以这不是"修了就要加冲突"的取舍，
-   冲突数哨兵（scripts/run_tests.sh）不受影响。守护它的用例是
-   Test/err/toplevel_resync.cmm（删掉本产生式后立刻变红）。 */
+   else**，只有编号从 `State 111` 变成 `State 113`（**这两个编号是当时实测的**，
+   当时基线冲突数为 1）—— 那是多了一条产生式、多出两个 new state 造成的，
+   **不是多了一个冲突**。所以这不是"修了就要加冲突"的取舍，冲突数哨兵
+   （scripts/run_tests.sh）不受影响。守护它的用例是
+   Test/err/toplevel_resync.cmm（删掉本产生式后立刻变红）。
+
+   ⚠️ 编号与**文法**相关、与 Bison 版本无关。本式之上后来又加过产生式
+   （`Def : error`、`ExtDef : Specifier FunDec SEMI`），故上句的 111/113 **不是当前值**：
+   当前实测值是下方 `Def` 一节的 `State 27 / 32 / 114`（总 state 数 118）。两处并排
+   不矛盾 —— 它们是同一件事在两代文法上的取值。 */
 ExtDef
   : Specifier ExtDecList SEMI   { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | Specifier SEMI              { $$ = newNode("ExtDef", 2, $1, $2); }
@@ -215,7 +221,9 @@ Exp
    去掉它后，下标内的错误由 Stmt 层出口接管，丢弃整条语句后在 `;` 同步。
    实测同样否决的写法：裸 `| error`（Exp 层再开一个出口，与 Stmt/CompSt 层重复，
    且新增 1 处移进/归约冲突）、`Def : error SEMI`（新增 2 处冲突：DefList 可空，
-   看 `error` 时既要移进又要按 DefList→ε 归约）。冲突数必须保持 1。 */
+   看 `error` 时既要移进又要按 DefList→ε 归约）。**冲突数必须保持当前基线 3**
+   不变（哨兵见 scripts/run_tests.sh 的「冲突数断言」块）；上面那两个"新增 N 处"
+   是更早、基线为 1 时实测的增量，不是与 3 相比的值。 */
   ;
 
 Args

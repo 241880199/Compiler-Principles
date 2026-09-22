@@ -11,6 +11,7 @@
 *.y         text eol=lf
 *.cmm       text eol=lf
 *.exp       text eol=lf
+*.pairs     text eol=lf
 *.md        text eol=lf
 Makefile    text eol=lf
 
