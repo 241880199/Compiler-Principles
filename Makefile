@@ -3,7 +3,7 @@ FLEX   = flex
 BISON  = bison
 CFLAGS = -std=c99 -Wall -g -Isrc
 
-SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c
+SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c src/type.c
 OBJS   = $(SRCS:.c=.o)
 
 # 默认目标**只有** ./parser。
@@ -53,7 +53,7 @@ syntax.tab.o: syntax.tab.c src/tree.h src/report.h
 lex.yy.o: lex.yy.c syntax.tab.h src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ lex.yy.c
 
-%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h
+%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h src/type.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # src/util.c 必须一起链：tree.c 里的 xmalloc/xstrdup 自实验二起搬到了 util.c
@@ -71,6 +71,15 @@ Test/unit/test_lexer: Test/unit/test_lexer.c lex.yy.c syntax.tab.c src/tree.c sr
 lexer-test: Test/unit/test_lexer
 	@bash -o pipefail -c './Test/unit/test_lexer < Test/unit/lexer_in.cmm | diff -u Test/unit/lexer_expected.txt -' && echo "PASS lexer"
 
+# type 模块单测：全项目唯一能完全脱离词法/语法/符号表独立测试的模块。
+# 它存在的首要理由是钉住数组维度顺序（设计文档 §5.1）—— 那个错误端到端测不出来
+# （长度不参与判等、维数不变、错误 12 只看下标类型），故必须查具体的 size 值。
+Test/unit/test_type: Test/unit/test_type.c src/type.c src/type.h src/util.c src/tree.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_type.c src/type.c src/util.c
+
+type-test: Test/unit/test_type
+	@bash -o pipefail -c './Test/unit/test_type' && echo "PASS type"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -81,7 +90,8 @@ lexer-test: Test/unit/test_lexer
 # 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
-.PHONY: all clean unit-test lexer-test
+.PHONY: all clean unit-test lexer-test type-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
-	      Test/unit/test_tree Test/unit/test_lexer Test/regress/driver Test/regress/*.o
+	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
+	      Test/regress/driver Test/regress/*.o
