@@ -1,0 +1,13 @@
+int f()
+{
+  struct T { int a; } v;
+  return 0;
+}
+int g()
+{
+  struct T { int a; } v;
+  return 0;
+}
+int main()
+{
+}

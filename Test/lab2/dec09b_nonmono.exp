@@ -1,0 +1,2 @@
+Error type 6 at Line 5: The left-hand side of an assignment must be a variable.
+Error type 9 at Line 6: Function "f(int)" is not applicable for arguments "(int, int)".

@@ -1,0 +1,5 @@
+int f()
+{
+  float g = 1.5;
+  if (g) return 1.5;
+}

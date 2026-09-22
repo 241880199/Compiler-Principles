@@ -1,0 +1,3 @@
+int f(int a);
+
+int f(float b) { return b; }

@@ -69,7 +69,7 @@ check_one() {
         check_pairs "$cmm" "$tmp"
     else
         fail=$((fail + 1))
-        echo "FAIL  $cmm"
+        echo "FAIL  $cmm  （.exp 不符 —— 实测输出与期望逐字节不一致）"
         diff -u "$exp" "$tmp" | sed 's/^/      /' | head -30
     fi
 }
@@ -119,16 +119,10 @@ fi
 # 否则"改错一条决策"将没有任何用例能发现（实验一 crlf.cmm 那次同类：
 # 防线静默消失、全部用例照过）。
 #
-# ⚠ **这份名单是随用例落地而增长的，当前只列已经存在的 5 个。**
-#   计划 Task 11 落地时要把名单扩到**全量 16 个**：
-#     dec01_namekind dec02_condnotint dec03_paramscope dec04_localstruct
-#     dec05_undefonly dec06_arrindex dec07_keepfirst dec08_poison
-#     dec09_sameline dec09b_nonmono dec10_useorder dec11_declconflict
-#     dec12_decl_ok_conflict dec13_mutualstruct dec14_rejecteddef_params
-#     dec15_iforder
-#   现在只列 5 个**不是漏写**：其余 11 个尚未创建（归 Task 11）。
-#   断言在只覆盖 5 个时**其全部价值已经成立** —— "已被创建的决策用例被删掉"
-#   这一刻它就会报警；扩名单只是把同样这条防线覆盖到更多用例上。
+# **名单已是全量 16 个**（Task 11 Step 5 由 5 个扩到 16 个）。历史：Task 10 落地时
+# 只列已存在的 5 个（dec02/dec03/dec08/dec10/dec14）—— 那个"只列已存在的"状态
+# 是当时的**权宜**，理由记载在 task-10-report.md；本任务建齐其余 11 个后即扩到全量。
+# 名单比文件多一个就会报红（这正是这条断言的作用），所以扩名单必须与建用例同一次落地。
 #
 # 已知的两个"既有、但不在计划 Task 11 创建清单里"的用例（**不要重复创建**）：
 #   dec08_poison            Task 8 修缺陷时补的
@@ -145,14 +139,40 @@ fi
 #   dec14 被拒定义的形参作用域      → 3（决策 3 扩展到被拒定义上；Task 7 评审缺陷的守卫）
 # 注意 dec09b_nonmono 是**端到端**的判别用例（非单调行号 L→M→L），
 # 它比单测强：走的是真实遍历。不要因为它名字带 b 就以为可以省。
-for d in dec02_condnotint dec03_paramscope dec08_poison \
-         dec10_useorder dec14_rejecteddef_params; do
+for d in dec01_namekind dec02_condnotint dec03_paramscope dec04_localstruct \
+         dec05_undefonly dec06_arrindex dec07_keepfirst dec08_poison \
+         dec09_sameline dec09b_nonmono dec10_useorder dec11_declconflict \
+         dec12_decl_ok_conflict dec13_mutualstruct dec14_rejecteddef_params \
+         dec15_iforder; do
     if [ ! -f "Test/lab2/$d.cmm" ]; then
         echo "FAIL  决策用例缺失：Test/lab2/$d.cmm（设计文档 §8 的对应开关失去守护）"
         fail=$((fail + 1))
     fi
     if [ ! -f "Test/lab2/$d.exp" ]; then
         echo "FAIL  决策用例缺期望文件：Test/lab2/$d.exp"
+        fail=$((fail + 1))
+    fi
+done
+
+# ── 官方样例的 .pairs 必须存在 ────────────────────────────────
+# `check_pairs` 开头是 `[ -f "$pairs" ] || return 0` —— 那是为了让**非官方**的用例
+# （决策用例、边界用例）不必各配一个 .pairs（判分字段只有官方样例才有）。
+# 但它同时意味着：**删掉任何一条官方样例的 .pairs 都会静默关掉那一层防线** ——
+# 脚本照样打印"通过 N 个，失败 0 个"、退出 0。Task 10 存在的理由就是保护评分字段
+# （错误类型 + 行号），而它自己的保护此前**没有被保护** —— 与上面那条决策用例断言、
+# 以及实验一 crlf.cmm 的运行时断言，防的是同一类失效：防线静默消失、无任何信号。
+#
+# 这份清单**同时充当"哪 23 个是官方样例"的文档**（17 个必做 + 6 个选做）。
+# 新增官方样例时必须在**同一提交**里加进这里，否则新样例的 .pairs 被删依旧是静默的。
+for p in lab2_undef_exp lab2_undef_func lab2_dupvar lab2_dupfunc \
+         lab2_assign_mismatch lab2_lvalue lab2_operand lab2_return \
+         lab2_argcount lab2_notarray lab2_notfunc lab2_subscript2 \
+         lab2_notstruct lab2_nofield lab2_dupfield lab2_dupstruct \
+         lab2_undefstruct \
+         lab2_declok lab2_declnodef lab2_funcreuse lab2_shadow \
+         lab2_structeq_ok lab2_structeq_bad; do
+    if [ ! -f "Test/lab2/$p.pairs" ]; then
+        echo "FAIL  官方样例缺 .pairs：Test/lab2/$p.pairs（判分字段那一层防线已静默失效）"
         fail=$((fail + 1))
     fi
 done
