@@ -26,3 +26,6 @@ Test/regress/driver
 
 # SDD 进度台账（临时工作文件）
 .superpowers/
+
+# ── Python 字节码（scripts/fuzz_legal.py 运行时产生）──────────
+__pycache__/
