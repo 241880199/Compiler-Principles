@@ -551,8 +551,9 @@ static Type analyzeStructSpecifier(const Node *n) {
         const Node *tag = n->child[1]->child[0];      /* Tag : ID */
         SymEntry *e = symLookup(tag->lexeme);
         if (!e || e->kind != SYM_STRUCT) {
-            /* 错误 17。**决策 5 的开关点**：`struct Undefined;`（没有变量）也走这里，
-             * 因为"看到 STRUCT Tag 就查表、查不到就报"是自然写法。 */
+            /* 错误 17：用未定义的结构体**定义变量**（含结构体的域）。
+             * 裸 `struct X;`（不定义任何变量）不走这里 —— 它在 analyzeExtDef 的
+             * ED_STRUCT_ONLY 分支就被跳过（决策 5，见 isBareStructTagSpecifier）。 */
             semErr(17, nodeLine(n->child[0]), "Undefined structure \"%s\"", tag->lexeme);
             return typeUnknown();
         }
@@ -827,6 +828,17 @@ static void analyzeGlobalDecList(const Node *n, Type base) {   /* ExtDecList */
     if (n->nchild == 3) analyzeGlobalDecList(n->child[2], base);
 }
 
+/* `Specifier` 是否是**裸的** `struct Tag`（不定义任何变量、也没有成员表）。
+ * 判据刻意用"看形态"而不是"设一个抑制标志"：`struct A { struct B b; };` 走的**也是**
+ * `ExtDef : Specifier SEMI`，用标志会把结构体定义**体内**真正的未定义引用一起抑制掉
+ * —— 实测 dec13（互相包含的结构体）就是这么被带走的。 */
+static int isBareStructTagSpecifier(const Node *sp) {
+    const Node *c;
+    if (!sp || sp->type != NT_SPECIFIER || sp->nchild != 1) return 0;
+    c = sp->child[0];
+    return c && c->type == NT_STRUCTSPECIFIER && c->nchild == 2;
+}
+
 static void analyzeExtDef(const Node *n) {
     Type base, ret;
     switch (extdefKind(n)) {
@@ -835,7 +847,14 @@ static void analyzeExtDef(const Node *n) {
         analyzeGlobalDecList(n->child[1], base);
         break;
     case ED_STRUCT_ONLY:                     /* Specifier SEMI —— `int;` 也走这里，不报错 */
-        (void)analyzeSpecifier(n->child[0]);
+        /* 裸 `struct X;`（决策 5）：**不报错误 17**，整条跳过。
+         * 依据是要求书对错误 17 的原文 ——"直接使用未定义过的结构体**来定义变量**"，
+         * 样例 17 也是 `struct Position pos;`（有变量）。不定义变量的前向声明不在
+         * 错误 17 的射程内，报它属于 3.1.3 明令扣分的"源程序里没有错却报错"。
+         * 跳过（而不是"报错后返回"）与旧行为在**查到已定义结构体**时的可观测量一致：
+         * 两者都没有输出。 */
+        if (!isBareStructTagSpecifier(n->child[0]))
+            (void)analyzeSpecifier(n->child[0]);
         break;
     case ED_FUNC: {                          /* Specifier FunDec CompSt */
         int nparams = 0;
