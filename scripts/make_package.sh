@@ -76,6 +76,19 @@ mkdir -p "$STAGE/Code"
 # Code/lexer.c，Makefile 从未引用它）在结构上不可能重演。
 git archive HEAD src | tar -x -C "$STAGE/Code" --strip-components=1
 
+# ── 2b. 扫描器必须以 .c 形式随包提交（名字**不能**叫 lex.yy.c）─────────
+# 判分机不用我们的 Makefile，它把课程给的参考 Makefile（作业一/Makefile_ref）盖上去。
+# 那条 `parser` 规则的链接行是 `$(filter-out $(LFO),$(OBJS))` —— 它把 **lex.yy.o 主动
+# 滤掉**，而 `lexical` 目标只跑 flex、**从不编译产物**。于是"由 lexical.l 生成的扫描器"
+# 在判分机上既不编译也不链接，链接期报：
+#     undefined reference to `yylex'  /  `yyin'
+# 2026-09-23 首次提交实测就是这个错。所以扫描器要以一个**不叫 lex.yy.c** 的 .c 文件
+# 随包提交 —— 实验一交付包里的 `Code/lexer.c` 正是这个用途（先前被误判成"误收进去的
+# 生成物"，那个判断是错的）。叫 lex.yy.c 会被上面那条 filter-out 再次滤掉。
+# **现场从 HEAD 的 lexical.l 生成**而不是存一份副本：副本会过期，而"改了 .l 忘了重
+# 生成 .c"在全绿的自检下是静默的。
+flex -o "$STAGE/Code/lexer.c" src/lexical.l
+
 # ── 3. 扁平 Makefile：从仓库 Makefile 机械派生 ────────────────
 # 与源码同源：**一律取 HEAD**（`git show HEAD:Makefile`），不取工作区 ——
 # 否则会出现"源码是 HEAD 的、Makefile 是工作区的"这种半新半旧的包。
