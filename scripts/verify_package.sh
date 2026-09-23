@@ -4,19 +4,21 @@
 #   用法： bash scripts/verify_package.sh <zip>
 #
 # 为什么是"对拍"而不是"再比对一遍 .exp"：
-#   仓库自检 scripts/run_tests.sh 已经把仓库的 ./parser 钉在 75 个 .exp 上（通过 75、失败 0）。
+#   仓库自检 scripts/run_tests.sh 已经把仓库的 ./parser 钉在全部 .exp 上（75 个全过）。
 #   本脚本只要证明**包里的构建与仓库的构建逐字节同行为**，结论就传递过去了 ——
 #   于是这里不存在第二份期望值，也就不会出现"两份期望各自漂移"的问题。
 #
 # 本脚本的六条断言，每条都对应一种曾经真实发生过的失效：
 #   ① 条目清单 —— 交付包里混进过无关的生成物（实验一：Code/lexer.c，57KB 的 flex 产物，
 #      Makefile 从未引用）。不是"多一个文件"，而是"包里有与构建无关的东西"。
-#   ② 干净目录 make 通过 + **零 gcc 警告** —— 仓库自检跑的构建用的是仓库 Makefile；
+#   ② 包内 report.pdf 与仓库那份逐字节相同 —— 报告是现场排版的，很容易"改了 .tex、
+#      忘了重编、把旧 PDF 打进包"。写上名字却没有产物与它相连，正是本项目反复出现的一类。
+#   ③ 干净目录 make 通过 + **零 gcc 警告** —— 仓库自检跑的构建用的是仓库 Makefile；
 #      包里的 Makefile 是派生的，仓库自检**看不到**它。这一条是它唯一的把关者。
-#   ③ 冲突数恰好 3、且每个都是 1 shift/reduce（锚定匹配，非子串）—— 文法退化的唯一哨兵。
+#   ④ 两个运行入口 ./parser 与 ./cc 都在且可执行。
+#   ⑤ 冲突数恰好 3、且每个都是 1 shift/reduce（锚定匹配，非子串）—— 文法退化的唯一哨兵。
 #      子串匹配会放过 "1 shift/reduce, 1 reduce/reduce"。
-#   ④ 行为对拍覆盖仓库的全部用例目录；⑤ 数目不为 0 —— 否则语料被清空时"0 个不一致"也报成功。
-#   ⑥ ./parser 与 ./cc 都在且可执行 —— 交付包的两个运行入口。
+#   ⑥ 行为对拍覆盖仓库的全部用例目录，且数目不为 0（语料被清空时"0 个不一致"也报成功）。
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -49,8 +51,22 @@ if ! diff -q "$WORK/expected" "$WORK/actual" > /dev/null; then
 fi
 echo "  ① 条目：$(wc -l < "$WORK/actual") 个，与预期一致"
 
-# ── ② 干净目录从零构建，且零警告 ───────────────────────────────
-# `make` 会顺带跑 bison -v，于是 ③ 要的 syntax.output 也在这一步产生。
+# ── ② 包内 report.pdf 必须是仓库当前那份 ───────────────────────
+REPORT_PDF=docs/实验二报告.pdf
+if [ ! -s "$REPORT_PDF" ]; then
+    echo "FAIL  找不到 $REPORT_PDF —— 无法核对包内报告" >&2
+    echo "      报告需现场排版：xelatex 编**两遍**（只编一遍页数不作数）。" >&2
+    exit 1
+fi
+if ! cmp -s <(unzip -p "$ZIP" report.pdf) "$REPORT_PDF"; then
+    echo "FAIL  包内 report.pdf 与 $REPORT_PDF 不一致" >&2
+    echo "      多半是改了 .tex 却没重编，或包是上一版打的 —— 重新打包即可。" >&2
+    exit 1
+fi
+echo "  ② report.pdf 与 $REPORT_PDF 逐字节一致（$(pdfinfo "$REPORT_PDF" | awk '/^Pages/{print $2}') 页）"
+
+# ── ③ 干净目录从零构建，且零警告 ───────────────────────────────
+# `make` 会顺带跑 bison -v，于是 ⑤ 要的 syntax.output 也在这一步产生。
 unzip -q "$ZIP" -d "$WORK/unpacked"
 cd "$WORK/unpacked/Code"
 
@@ -65,7 +81,7 @@ if ! make > "$WORK/build.log" 2>&1; then
 fi
 # 只数**编译器**警告。判据必须锚在 gcc 的诊断格式 `file.c:行:列: warning: ...` 上：
 # bison 的冲突提示形如 `syntax.y: warning: 3 shift/reduce conflicts`，那是**预期之内**
-# 的（README 写明 3 处冲突属预期），由 ④ 单独断言。用裸的 `warning:` 计数会把它算进来，
+# 的（README 写明 3 处冲突属预期），由 ⑤ 单独断言。用裸的 `warning:` 计数会把它算进来，
 # 于是这条断言在**正常构建**上误报 —— 判据与它声称检验的东西不一致。
 warn=$(grep -cE '^[^:]+\.(c|h):[0-9]+:[0-9]+: warning:' "$WORK/build.log" || true)
 if [ "$warn" -ne 0 ]; then
@@ -73,18 +89,18 @@ if [ "$warn" -ne 0 ]; then
     grep -nE '^[^:]+\.(c|h):[0-9]+:[0-9]+: warning:' "$WORK/build.log" | sed 's/^/      /'
     exit 1
 fi
-echo "  ② 从零 make：通过，零 gcc 警告"
+echo "  ③ 从零 make：通过，零 gcc 警告"
 
-# ── ⑥ 两个运行入口都在 ─────────────────────────────────────────
+# ── ④ 两个运行入口都在 ─────────────────────────────────────────
 for bin in parser cc; do
     if [ ! -x "$bin" ]; then
         echo "FAIL  解包产物缺可执行文件 ./$bin" >&2
         exit 1
     fi
 done
-echo "  ③ ./parser 与 ./cc 均在且可执行"
+echo "  ④ ./parser 与 ./cc 均在且可执行"
 
-# ── ③ 冲突数：恰好 3 个 state，且每个都是「1 shift/reduce」──────
+# ── ⑤ 冲突数：恰好 3 个 state，且每个都是「1 shift/reduce」──────
 # 与 scripts/run_tests.sh 的断言同形（锚定，非子串；[Ss] 兼容 bison 3.0.4）。
 if [ ! -f syntax.output ]; then
     echo "FAIL  解包产物未生成 syntax.output —— 冲突数断言无法执行" >&2
@@ -102,9 +118,9 @@ if [ "$one" -ne 3 ]; then
     grep -nE '^[Ss]tate [0-9]+ conflicts:' syntax.output | sed 's/^/      /'
     exit 1
 fi
-echo "  ④ 冲突数：3 个 state，均为 1 shift/reduce"
+echo "  ⑤ 冲突数：3 个 state，均为 1 shift/reduce"
 
-# ── ④ 与仓库构建逐字节对拍 ─────────────────────────────────────
+# ── ⑥ 与仓库构建逐字节对拍 ─────────────────────────────────────
 cd "$REPO"
 if ! make parser > /dev/null 2>&1; then
     echo "FAIL  仓库自身构建失败，无法对拍（请先修好仓库）" >&2
@@ -140,7 +156,6 @@ for cmm in Test/sample/*.cmm Test/err/*.cmm Test/lab2/*.cmm; do
 done
 set -e
 
-# ── ⑤ 数目不为 0：语料被清空时不要报成功 ───────────────────────
 if [ "$pass" -eq 0 ]; then
     echo "FAIL  一个用例都没跑到 —— 检查 Test/ 是否被移动或清空"
     exit 1
@@ -157,7 +172,7 @@ if [ -n "$other" ]; then
     echo "$other" | sed 's/^/        /'
 fi
 
-echo "  ⑤ 行为对拍：$pass 个用例与仓库构建逐字节一致，不一致 $fail 个"
+echo "  ⑥ 行为对拍：$pass 个用例与仓库构建逐字节一致，不一致 $fail 个"
 echo "──────────────────────────────────────────"
 if [ "$fail" -ne 0 ]; then
     echo "交付包复核失败：$fail 个用例与仓库构建不一致" >&2
