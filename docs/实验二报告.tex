@@ -33,9 +33,7 @@
 \end{center}
 
 \textbf{工具版本}：gcc \textbf{11.4.0}、GNU flex \textbf{2.6.4}、GNU bison
-\textbf{3.8.2}、GNU make \textbf{4.3}（Ubuntu 22.04）。评分环境按实验二要求书取
-bison \textbf{3.5.1}（focal），\textbf{已实机跑完整套用例通过}；实验一要求书写的是
-3.0.4，两份要求书互相矛盾，我们取严者、两版通吃（第二节）。
+\textbf{3.8.2}、GNU make \textbf{4.3}（Ubuntu 22.04）
 
 \section*{一、实现的功能，以及如何实现}
 
@@ -55,7 +53,7 @@ bison \textbf{3.5.1}（focal），\textbf{已实机跑完整套用例通过}；�
 \hline
 结构等价\par（选做 2.3） & 忽略域名、按位置比域的类型，域数量必须相同；数组整体作为一个（基类型, 维数）单位比较，\textbf{不展开}（为什么必须如此，见第三节）。\\
 \hline
-输出，与和实验一的关系 & 词法/语法错仍报 \code{A}/\code{B}；\textbf{完全无错时不输出任何内容}（不再打印语法树）。语义报告走 \code{reportSemanticError}，它维护一个\textbf{已打印过的行号集合}，重复行直接丢弃（判据无条件，不依赖「相邻」）；实验一的 A/B 路径原样保留，两条路径的去重状态互不干扰。实验一的 30 个用例改由回归驱动 \code{Test/regress/driver} 跑，作语法层回归网。\\
+输出格式 & 词法/语法错仍报 \code{A}/\code{B}；\textbf{完全无错时不输出任何内容}（不再打印语法树）。语义报告走 \code{reportSemanticError}，它维护一个\textbf{已打印过的行号集合}，重复行直接丢弃（判据无条件，不依赖「相邻」）；实验一的 \code{A}/\code{B} 路径原样保留，两条路径的去重状态互不干扰。\\
 \hline
 \end{tabular}}
 
@@ -65,15 +63,17 @@ bison \textbf{3.5.1}（focal），\textbf{已实机跑完整套用例通过}；�
 sudo apt-get install -y flex bison gcc make
 make clean && make          # 生成 ./parser（同时生成同内容的 ./cc）
 ./parser <文件>              # 无错时不输出任何内容；有错时打印错误信息
-bash scripts/run_tests.sh   # 可选自检：Test/ 下 73 个用例逐字节比对
 \end{lstlisting}
 
-编译方式与实验一完全相同（同一份 Makefile），另有 \code{make type-test} 等六个单测
-目标。关于 Bison 版本：两份要求书互相矛盾（实验一写 3.0.4、实验二写 3.5.1，而两处都
-标注「同实验一」），处置是\textbf{取严者} —— 文法里不写任何 3.1+ 才有的东西（不用
-\code{\%define parse.error detailed}、不用 \code{\%union}）。实测 \textbf{3.8.2 /
-3.5.1 / 3.0.4 三版下 73 个用例都是 73/0}，且三版的冲突 state 编号与状态项逐字相同：
-\textbf{编号只取决于文法、与 Bison 版本无关}。
+编译与实验一完全相同：仓库根目录执行 \code{make} 即可，除 \code{src/} 外不依赖任何
+目录。\textbf{请勿使用 \code{make -j}} —— \code{syntax.tab.c syntax.tab.h} 是一条
+「一个 recipe、两个目标」的多目标规则，并发下会被当成两条独立规则、同时跑两次 bison
+并写同一个文件。
+
+关于 Bison 版本：文法不使用 3.1 以后才引入的写法（不用
+\code{\%define parse.error detailed}、不用 \code{\%union}），因此 \textbf{3.0.4 及
+以上各版本均可编译}；实测 3.0.4 / 3.5.1 / 3.8.2 三个版本下，冲突 state 的编号与状态项
+\textbf{逐字相同} —— 编号只取决于文法，与版本无关。
 
 \section*{三、亮点 1：把「不展开数组」从要求书的例子里反推出来}
 
@@ -97,7 +97,7 @@ B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, in
 不同的），而「忽略域名」的直接佐证又只能来自那对「等价」的例子。\textbf{推理到这里才
 闭合}：两条规则互为对方的证据，任何一条单独看都像是凭空规定。
 
-\section*{四、亮点 2：一个端到端\textbf{测不出来}的 bug，决定了模块边界}
+\section*{四、亮点 2：一个在语义层\textbf{观测不到}的 bug，决定了模块边界}
 
 \code{int a[10][2]} 的 \code{VarDec} 树是左递归的：
 \code{VarDec(VarDec(a) LB 10 RB) LB 2 RB} —— \textbf{最外层结点带的是最后一个方括号}。
@@ -106,28 +106,27 @@ B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, in
 
 这个 bug 在本实验里\textbf{没有任何症状}：数组等价\textbf{忽略长度}，反了的数组与
 任何同维数组比较仍然「相等」；\textbf{维数没变}，于是错误 10（对非数组用 \code{[]}）
-的触发条件不变；错误 12 只看\textbf{下标}的类型，与数组本身是什么类型无关。也就是
-17 种检查\textbf{一条都发现不了它}，端到端用例全绿。
+的触发条件不变；错误 12 只看\textbf{下标}的类型，与数组本身是什么类型无关。也就是说，
+17 种检查\textbf{一条都发现不了它} —— 整个语义分析阶段无从暴露它。
 
-唯一能钉住它的办法，是让类型模块\textbf{脱离词法/语法/符号表独立单测}，并且断言
-\textbf{具体的 \code{size} 值}（只查维数同样抓不到）。\code{make type-test} 干的就是
-这件事。这就是这条模块边界的由来：\code{type.c} \textbf{不依赖任何东西}（连符号表都
-不依赖），不是为了分层好看，而是因为\textbf{只有它能看见这个 bug}。一句话：
-\textbf{判别力的边界决定模块的边界} —— 一个错误若在高层没有任何可观测量，就只能靠
-把低层做成可独立测试的纯模块来发现。
+唯一能钉住它的办法，是让类型模块\textbf{脱离词法、语法、符号表独立可测}，并且断言
+\textbf{具体的 \code{size} 值}（只查维数同样抓不到）。这就是这条模块边界的由来：
+\code{type.c} \textbf{不依赖任何东西}（连符号表都不依赖），不是为了分层好看，而是因为
+\textbf{只有它能看见这个 bug}。一句话：\textbf{判别力的边界决定模块的边界} —— 一个错误
+若在高层没有任何可观测量，就只能靠把低层做成可独立测试的纯模块来发现。
 
 \section*{五、亮点 3：把「要求书没规定」的十条做成可单点翻转的开关}
 
 要求书与指导书对十种情形\textbf{都没有写}：变量名与函数名冲突报哪个码？\code{if} 的
 条件不是 \code{int} 报错误 7 还是别的？形参与函数体算不算同一个作用域？\code{a[b]}
-（\code{b} 是数组）报 12 还是 7？同一行出现两条错误留哪一条？这些都是\textbf{推不
-出来的}，两份文档里都没有依据。
+（\code{b} 是数组）报 12 还是 7？同一行出现两条错误留哪一条？这些\textbf{推不出来}，
+两份文档里都没有依据，只能自己选定一种行为。
 
-而实验二\textbf{有在线判分}：猜错的代价是当场丢分，且判分反馈通常只说「某个用例错」。
-所以我们不猜，把它做成\textbf{可收敛的}。每条必须满足三点，缺一不可：
+既然依据无从查出，目标就不该是「猜得准」，而是\textbf{改得起}。为此每条选定行为都必须
+满足三点，缺一不可。
 
 \begin{enumerate}
-\item \textbf{行为收敛在代码里的一个位置}，并写明「这是第 N 条，要求书未规定」
+\item \textbf{行为收敛在代码里的一个位置}，并注明「这是第 N 条，要求书未规定」
 \allowbreak：\code{symConflictCode()}（1）\allowbreak、\code{checkCondition()}（2）\allowbreak、
 \code{analyzeExtDef} 的 \code{ED\_FUNC} 分支里\textbf{那一次} \code{scopeEnter()} 调用
 （3，必须落在登记函数名之后、登记形参之前）\allowbreak、
@@ -135,11 +134,10 @@ B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, in
 \textbf{当前}作用域深度）\allowbreak、\code{analyzeStructSpecifier} 里
 \code{nchild == 2} 的那个分支（5）\allowbreak、\code{analyzeSubscript}（6）\allowbreak、
 \code{symEnter} 的返回值语义（7）\allowbreak、
-\code{checkable()} 毒化开关（8）\allowbreak、\code{report.c} 的同行去重（9）\allowbreak、
-\code{type.c} 的 \code{structEquivalence}（选做 2.3）。做不到这一点，
-它就会退化成散在代码里的偶然行为，改一条要通读全文。
-\item \textbf{各配一个专属用例}钉住当前行为（\code{Test/lab2/dec01}--\code{dec17}），
-且自检脚本断言这些用例\textbf{必须存在} —— 否则改错一条决策不会有任何用例变红。
+\code{checkable()} 毒化开关（8）\allowbreak、\code{report.c} 的同行去重（9）。
+做不到这一点，它就会退化成散在代码里的偶然行为，改一条要通读全文。
+\item \textbf{各配一个专属用例}钉住当前行为（\code{Test/lab2/dec01}--\code{dec17}）——
+否则改动其中一条时，没有任何东西会变红。
 \item \textbf{一张从症状反查决策的对照表}：
 \end{enumerate}
 
@@ -170,20 +168,22 @@ B = struct B { struct { int i; float f; } b[10]; int b; }  -> [int,float]x10, in
 \end{tabular}}
 
 第 10 条要单独说：它的「开关」不是一行代码，而是\textbf{遍历结构本身}（单遍、不做
-预扫描），也是十条里唯一「判分若指向它、修复成本不对称」的一条（要改成一趟预扫描先
-收集全局名），所以它最需要这张表和那条用例。这张表才是整套做法的价值所在：判分反馈
-进来时（它只会说「某个用例错了」），它是\textbf{唯一能立刻定位到是哪条决策}的东西。
-把未知收敛成已知，靠的不是猜得准，而是\textbf{猜错时可查、可改、可验证}。
+预扫描，于是定义必须先于使用），也是十条里唯一「改起来代价不对称」的一条 —— 若要改成
+「全文件任意位置定义即可」，得先加一趟预扫描收集全局名，而不是改一个 \code{if}。正因
+如此，它最需要这张表和那条用例。这张表才是整套做法的落点：十种情形里任何一种若被判定
+需要改，它是\textbf{从症状直接定位到那一个开关}的东西 —— 把未知收敛成已知，靠的不是
+猜得准，而是\textbf{选定过的行为可查、可改、可验证}。
 
-同一套思路也用在判分本身：每个官方样例配两个期望文件 —— \code{.exp} 钉我们自己的
-完整文本、\code{.pairs} 钉官方的「错误类型 + 行号」序列（要求书明说这是唯一评分标准），
-两者分开才能把「改了说明文字」与「错误类型/行号错了」分开暴露。最后一句方法论：本项目对
-\textbf{每一条判据}都做了变异测试 —— 把它改坏，必须有用例变红；据此发现并修复了
-「判据看似存在、实则没有判别力」的问题。举两个有名字的例子（取证见过程文档）：Task 4 的
-\code{scopeExit()} 摘链\textbf{当时没有任何断言看着} —— 原有的检查点全在
-\code{scopeExit()} 之后、此时 \code{curDepth == 0}，\code{symLookup} 的深度守卫自己就把
-残留过滤掉了，于是「退层不摘散列链」这个变异\textbf{存活}（补测后才杀死）；Task 8 的毒化
-探针\textbf{两个候选错误全落在同一行}（写成 \code{i = j + 1;}），被同行去重抑制，把毒化
-整个关掉也不变红 —— 必须拆到不同行（\code{i = 1} 换行 \code{+ j;}）才恢复判别力。
+同一套思路也用在期望文件上：每个官方样例配两个期望文件 —— \code{.exp} 钉我们自己的
+完整文本、\code{.pairs} 钉官方的「错误类型 + 行号」序列（要求书明说这是唯一的判据），
+两者分开，才能把「改了说明文字」与「错误类型/行号错了」分开暴露。
+
+最后一条原则贯穿全篇：\textbf{每一条检查都要自证有判别力} —— 把它改坏，必须有用例变红。
+照这条原则反向验证时，确实发现并修掉了两处「判据看似存在、实则没有判别力」：一处是
+\code{scopeExit()} 的摘链动作\textbf{当时没有任何检查看着}（原有检查点全在其后，此时
+\code{curDepth == 0}，\code{symLookup} 的深度守卫自己就把残留过滤掉了，于是「退层不摘
+散列链」这个改动\textbf{无人察觉}）；另一处是 \code{UNKNOWN} 毒化的探针\textbf{两个候选
+错误全落在同一行}，被同行去重抑制，把毒化整个关掉也不变红 —— 拆到不同行才恢复判别力。
+没有判别力的判据会和缺陷一起交付，所以这条不是自我要求，是必要条件。
 
 \end{document}
