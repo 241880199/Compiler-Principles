@@ -281,6 +281,7 @@ class Gen:
     # ── 组装 ────────────────────────────────────────────────────
     def program(self):
         gscope = Scope()
+        self.gscope = gscope          # 供 fuzz_inject.py 取"哪些全局名是 int 标量"
         self.make_structs()
         types = ["int", "float", Arr("int", 1), Arr("float", 1), Arr("int", 2)]
         if self.structs:
