@@ -43,14 +43,27 @@ ExtDefList
    全部错误）。写法与 `Stmt : error SEMI` 完全一致（含 newNode 元数约定）。
 
    **实测（bison 3.8.2 与 3.0.4 两版）：冲突 state 数都仍是 1、内容都仍是那处悬空
-   else**，只有编号从 `State 111` 变成 `State 113` —— 那是多了一条产生式、多出两个
-   new state 造成的，**不是多了一个冲突**。所以这不是"修了就要加冲突"的取舍，
-   冲突数哨兵（scripts/run_tests.sh）不受影响。守护它的用例是
-   Test/err/toplevel_resync.cmm（删掉本产生式后立刻变红）。 */
+   else**，只有编号从 `State 111` 变成 `State 113`（**这两个编号是当时实测的**，
+   当时基线冲突数为 1）—— 那是多了一条产生式、多出两个 new state 造成的，
+   **不是多了一个冲突**。所以这不是"修了就要加冲突"的取舍，冲突数哨兵
+   （scripts/run_tests.sh）不受影响。守护它的用例是
+   Test/err/toplevel_resync.cmm（删掉本产生式后立刻变红）。
+
+   ⚠️ 编号与**文法**相关、与 Bison 版本无关。本式之上后来又加过产生式
+   （`Def : error`、`ExtDef : Specifier FunDec SEMI`），故上句的 111/113 **不是当前值**：
+   当前实测值是下方 `Def` 一节的 `State 27 / 32 / 114`（总 state 数 118）。两处并排
+   不矛盾 —— 它们是同一件事在两代文法上的取值。 */
 ExtDef
   : Specifier ExtDecList SEMI   { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | Specifier SEMI              { $$ = newNode("ExtDef", 2, $1, $2); }
   | Specifier FunDec CompSt     { $$ = newNode("ExtDef", 3, $1, $2, $3); }
+/* 错误恢复同步点之外的第二处文法扩展（选做 2.1）：函数声明。
+   附录 A 的 ExtDef 只有三条产生式，没有函数声明，要求书 2.1(c) 明说需要改文法。
+   不与 `Specifier ExtDecList SEMI` 冲突：在 `Specifier` 之后看到 ID 时，状态里
+   同时有 `VarDec: ID •` 与 `FunDec: ID • LP …`；前瞻为 SEMI/COMMA/LB 时归约为
+   VarDec，前瞻为 LP 时移进 —— FunDec 的两条产生式都以 ID LP 开头，LALR(1) 够用。
+   不支持的写法：省略参数名的声明（int foo(int, float)）—— 要求书明说不要求支持。 */
+  | Specifier FunDec SEMI       { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | error SEMI                  { $$ = newNode("ExtDef", 2, $1, $2); }
   ;
 
@@ -119,8 +132,12 @@ DefList
    代价（实测）：新增 2 个冲突 state —— `DefList` 可空，于是"看 `error` 时移进"与
    "按 `DefList → ε` 归约"不可兼得。**这两处的确切归属（粘自 syntax.output）**：
 
-     State 26  `CompSt: LC • DefList StmtList RC`
-     State 31  `DefList: Def • DefList`          ← 递归式，前瞻集与 State 26 相同
+     State 27  `CompSt: LC • DefList StmtList RC`
+     State 32  `DefList: Def • DefList`          ← 递归式，前瞻集与 State 27 相同
+   （编号为 Task 6 加 `ExtDef : Specifier FunDec SEMI` 之后的实测值；该新产生式
+   只新增 1 个 state 且落在第 26 位，故 ≥26 的编号统一 +1，原先的 26/31 即 27/32。
+   冲突个数不变，理由见上方 `ExtDef` 中新产生式 `Specifier FunDec SEMI` 的说明
+   与 scripts/run_tests.sh 的「冲突数断言」块。）
 
    注意**不是** `StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）——
    结构体成员表后面只能跟 `RC`，`error` 不进它的前瞻集，那里 `error` 是个无歧义的
@@ -154,7 +171,11 @@ ParamDec
    弹栈到此并在 `}` 处同步，避免一路吞到文件尾。 */
 CompSt
   : LC DefList StmtList RC      { $$ = newNode("CompSt", 4, $1, $2, $3, $4); }
-  | error RC                    { $$ = newNode("CompSt", 2, $1, $2); }
+/* 块层出口**不带同步符**：带同步符时 Bison 会先丢弃词法单元直到 `}` 出现才归约，
+   把块内其后的定义整段吃掉，同一份文件因此少报错误（实测：`if (1 < 2` 缺右括号
+   之后紧跟的缺分号再也报不出来）。裸 `error` 移进后立即归约、不丢任何前瞻。
+   改动只加 1 条产生式，冲突 state 数仍是 3。 */
+  | error                       { $$ = newNode("CompSt", 1, $1); }
   ;
 
 StmtList
@@ -200,7 +221,9 @@ Exp
    去掉它后，下标内的错误由 Stmt 层出口接管，丢弃整条语句后在 `;` 同步。
    实测同样否决的写法：裸 `| error`（Exp 层再开一个出口，与 Stmt/CompSt 层重复，
    且新增 1 处移进/归约冲突）、`Def : error SEMI`（新增 2 处冲突：DefList 可空，
-   看 `error` 时既要移进又要按 DefList→ε 归约）。冲突数必须保持 1。 */
+   看 `error` 时既要移进又要按 DefList→ε 归约）。**冲突数必须保持当前基线 3**
+   不变（哨兵见 scripts/run_tests.sh 的「冲突数断言」块）；上面那两个"新增 N 处"
+   是更早、基线为 1 时实测的增量，不是与 3 相比的值。 */
   ;
 
 Args

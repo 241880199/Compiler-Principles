@@ -1,0 +1,6 @@
+int main()
+{
+  float f = 1.5;
+  if (f)
+    return 0;
+}

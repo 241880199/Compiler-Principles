@@ -1,0 +1,4 @@
+struct Undefined;
+int main()
+{
+}

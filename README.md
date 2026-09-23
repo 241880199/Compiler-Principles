@@ -18,6 +18,36 @@
 
 **设计文档**：[`docs/superpowers/specs/2026-09-20-cmm-lab1-design.md`](docs/superpowers/specs/2026-09-20-cmm-lab1-design.md)
 
+**与实验二的关系**：实验二的 `./parser` **不再打印语法树**（实验一指导书第 25 页明说
+那段打印代码"后面的实验不会再用"）。实验一那 30 个 `.exp` 装的仍是语法树，因此它们
+改由回归驱动 `Test/regress/driver` 运行 —— 见下面「测试」一节。
+
+---
+
+## 实验二：C-- 语义分析与类型检查
+
+在实验一建好的语法树上**手写**语义分析与类型检查（语义部分不借助任何工具，
+前端仍是实验一的 Flex + Bison）。实现了**必做 17 种语义错误 + 三项选做**，
+合计 **19 个错误码**：
+
+| 类别 | 内容 | 错误码 |
+|---|---|---|
+| 必做 | 未定义变量、未定义函数、变量重复定义、函数重复定义、赋值类型不匹配、左值、操作数类型、`return` 类型、实参不匹配、对非数组用 `[]`、对普通变量用 `()`、下标非整数、对非结构体用 `.`、访问未定义域、域名重复/域初始化、结构体名冲突、直接用未定义结构体 | 1–17 |
+| 选做 2.1 | 函数**声明**（原型）：定义不可重复，相互一致的声明可重复。为此给文法加了一条产生式 `ExtDef : Specifier FunDec SEMI` | 18、19 |
+| 选做 2.2 | **嵌套作用域**：内层可重复定义外层变量并**遮蔽**它，离开内层即消亡，不同函数体的局部变量可重名 | 无新码，改变 1–17 的判定 |
+| 选做 2.3 | **结构等价**（忽略域名、**不展开数组**）；数组等价忽略长度，基类型 + 维数相同即同类型 | 无新码，改变 5/7 的判定 |
+
+**⚠️ 与实验一的行为差异（最容易踩的一条）**：
+
+- 词法/语法有错 → 仍打印 `Error type [A|B] at Line [n]: …`（实验一行为不变）
+- **语义**有错 → 打印 `Error type [错误码] at Line [n]: …`
+- **完全无错时不输出任何内容**（实验一那时是打印语法树）—— 与要求书一致
+- 退出码不变：正常分析完毕返回 `0`（无论有无错误）；缺文件名参数或文件打不开返回 `1`
+- 每个输入文件**每行最多只有一条错误**（要求书规定）
+
+**设计文档**：[`docs/superpowers/specs/2026-09-22-cmm-lab2-design.md`](docs/superpowers/specs/2026-09-22-cmm-lab2-design.md)
+**实验报告**：`docs/实验二报告.md`（`docs/实验二报告.pdf` 为同一内容的排版稿）
+
 ---
 
 ## 环境要求与工具版本
@@ -34,7 +64,7 @@ sudo apt-get update && sudo apt-get install -y flex bison gcc make
 |---|---|---|---|
 | gcc | **11.4.0**（Ubuntu 11.4.0-1ubuntu1~22.04.3） | 7.5.0 | 代码只用 C99 子集，两版均可编译 |
 | flex | **2.6.4** | 2.6.4 | 与评分环境完全一致 |
-| bison | **3.8.2** | 3.0.4 | 只使用两版通用的写法（见下）；**并已在 3.0.4 实机复跑整套用例** |
+| bison | **3.8.2** | **3.5.1**（实验二要求书）/ 3.0.4（实验一要求书） | 只使用三版通用的写法（见下）；**3.5.1 与 3.0.4 均已实机复跑整套用例** |
 | make | **4.3** | 4.2（Ubuntu 20.04） | 见下方"不要用 `make -j`" |
 
 查看本机版本：
@@ -43,24 +73,35 @@ sudo apt-get update && sudo apt-get install -y flex bison gcc make
 gcc --version | head -1; flex --version; bison --version | head -1; make --version | head -1
 ```
 
-**关于评分环境的 bison 3.0.4：已实机验证，不是"无法实机验证"。** 从 Ubuntu bionic
-的归档取出 `bison_3.0.4.dfsg-1build1_amd64.deb`、用 `dpkg-deb -x` 解包（配合环境变量
-`BISON_PKGDATADIR` 指向解包出的 `usr/share/bison`）后，在仓库副本里重新生成
-`syntax.tab.c` 并跑完整套件，实测：
+**关于评分环境的 Bison：已实机验证，不是"无法实机验证"。** 从 Ubuntu 归档取出
+`bison_3.5.1+dfsg-1_amd64.deb`（focal —— **实验二要求书写的判分版本**）与
+`bison_3.0.4.dfsg-1build1_amd64.deb`（bionic —— 实验一要求书写的版本），用
+`dpkg-deb -x` 解包（配合环境变量 `BISON_PKGDATADIR` 指向解包出的 `usr/share/bison`）
+后，在仓库副本里各自重新生成 `syntax.tab.c` 并跑完整套件，实测：
 
-| 检查项 | bison 3.8.2 | bison 3.0.4 |
-|---|---|---|
-| 编译警告 | 3 处 shift/reduce 冲突 | 3 处 shift/reduce 冲突 |
-| 冲突 state | `26` / `31` / `114`，各 `1 shift/reduce` | `26` / `31` / `114`，各 `1 shift/reduce` |
-| `bash scripts/run_tests.sh` | **通过 30 个，失败 0 个** | **通过 30 个，失败 0 个** |
+| 检查项 | bison 3.8.2（本机） | bison 3.5.1（focal） | bison 3.0.4（bionic） |
+|---|---|---|---|
+| 编译警告 | 3 处 shift/reduce 冲突 | 3 处 shift/reduce 冲突 | 3 处 shift/reduce 冲突 |
+| 冲突 state | `27` / `32` / `114`，各 `1 shift/reduce` | 同左 | 同左 |
+| 总 state 数 | 118 | 118 | 118 |
+| `bash scripts/run_tests.sh` | **通过 73 个，失败 0 个** | **通过 73 个，失败 0 个** | **通过 73 个，失败 0 个** |
+
+> **两份要求书的 Bison 版本互相矛盾（如实记录）**：实验一要求书写 **3.0.4**、
+> 实验二要求书写 **3.5.1**，而**两处都标注"（同实验一）"**。这是一个客观的文档矛盾。
+> **处置：取严者。** 实验一为兼容 3.0.4 而回避的写法（不用 `%define parse.error
+> detailed`、不用 `%union`、不用 `&:` 分组目标）在 3.5.1 下同样可用，因此实验二
+> **不新增任何版本相关限制**，沿用实验一的写法，三版通吃。
+> **编号只取决于文法、与 Bison 版本无关**：三版的 state 编号、状态项、规则号逐字相同，
+> 只有状态项里那个点的写法不同（3.5.1 / 3.0.4 印 `.`，3.8.2 印 `•`）。
 
 （冲突由 1 变 3 是采纳 `Def : error` 的结果：其中 2 处由它引起、1 处仍是悬空 else。
 详见下文「测试」一节的冲突断言语与 `src/syntax.y` 的注释。）
 
-**Bison 版本兼容**：为兼容评分环境的 Bison 3.0.4，文法中**不使用** `%define parse.error
-detailed`（3.0.4 无此值）等 3.1+ 新增写法；语义值用 `%define api.value.type {Node *}`
-而非 `%union`。本程序自行定义 `main` 与 `yyerror`，因此链接时**不需要 `-ly`**
-（评分环境亦无 `liby`）；同时在 `lexical.l` 里声明 `%option noyywrap`。
+**Bison 版本兼容**：为兼容评分环境最老的 Bison 3.0.4（与 3.5.1），文法中**不使用**
+`%define parse.error detailed`（3.0.4 无此值）等 3.1+ 新增写法；语义值用
+`%define api.value.type {Node *}` 而非 `%union`。本程序自行定义 `main` 与 `yyerror`，
+因此链接时**不需要 `-ly`**（评分环境亦无 `liby`）；同时在 `lexical.l` 里声明
+`%option noyywrap`。
 
 ## 编译
 
@@ -88,22 +129,30 @@ make clean && make
 ## 运行
 
 ```bash
-./parser Test/sample/semantic.cmm     # 输出语法树
-./cc     Test/sample/semantic.cmm     # 等价，./cc 是同一份程序的副本
+./parser <文件>      # 当前行为（实验二）
+./cc     <文件>      # 等价，./cc 是同一份程序的副本
+
+# 想看到实验一那种"无错时打印语法树"的行为，用回归驱动（需先 make Test/regress/driver）：
+./Test/regress/driver <文件>
 ```
 
-- 无错误时按先序打印语法树，子结点每层缩进 2 空格，ε 结点不打印。
+- **完全无错时不输出任何内容**（实验二要求书的规定；与实验一不同 —— 实验一那时
+  会打印语法树，那段代码现在只留在回归驱动里）。
 - 有错误时**只**打印错误信息，**不**打印语法树。格式：
-  `Error type [A|B] at Line [n]: [说明].`
-- 错误信息与语法树都输出到 **stdout**。
-- 退出码：正常分析完毕返回 `0`（无论有无词法/语法错误）；仅当缺少文件名参数或
-  文件打不开时返回 `1`。
+  `Error type [错误类型] at Line [行号]: [说明].`
+  词法/语法错报 `A` / `B`，语义错报数字码 `1`–`19`。
+- **错误信息输出到 stdout**（要求书明确，判分脚本读 stdout），且 **stderr 保持为空**；
+  只有"缺文件名参数"与"文件打不开"这两条提示写 stderr。
+- 退出码：正常分析完毕返回 `0`（无论有无错误）；仅当缺少文件名参数或文件打不开时
+  返回 `1`。
+- 同一个输入文件里，**每行最多一条错误**（要求书规定，语义错误的同行去重收敛在
+  `src/report.c` 一处）。
 
 ## 测试（**可选**的自检；评分流程不依赖它）
 
 ```bash
 make                       # 自检脚本需要 ./parser
-bash scripts/run_tests.sh  # 跑 Test/sample 与 Test/err 下全部用例，与同名 .exp 逐字节比对
+bash scripts/run_tests.sh  # 跑 Test/sample、Test/err、Test/lab2 下全部用例，与同名 .exp 逐字节比对
 ```
 
 评分流程是 `make` + `./parser <文件>`，**不需要**测试入口；因此 Makefile 里
@@ -111,19 +160,35 @@ bash scripts/run_tests.sh  # 跑 Test/sample 与 Test/err 下全部用例，与�
 随提交一起打包（打包时漏掉它，`make test` 就会坏，而 `make` 本身不该受影响）。
 自检脚本仍在仓库里（`scripts/run_tests.sh`），要用就按上面的命令直接调。
 
-预期输出以 `通过 30 个，失败 0 个` 结尾（在 bison 3.8.2 与 3.0.4 下各复跑一次，
-两次都是 30/30）。
+预期输出以 `通过 73 个，失败 0 个` 结尾（**73 = 实验一的 30 个 + 实验二的 43 个**；
+在 bison 3.8.2、3.5.1、3.0.4 三版下各复跑一次，三次都是 73/73）。
 
-自检脚本除比对用例之外还做三条断言，三条都不可省：
+- 实验一的 30 个（`Test/sample` 19 + `Test/err` 11）：期望的是**语法树或 A/B 错误**，
+  由回归驱动 `Test/regress/driver` 跑（脚本自己会 `make` 出它，构建失败则**响亮退出**
+  —— 静默跳过会让这 30 个用例无声消失）。
+- 实验二的 43 个（`Test/lab2`）：期望的是**语义错误**，由 `./parser` 跑。
+  其中 **23 个官方样例**（要求书必做 17 + 选做 6）、**16 个决策/边界用例**
+  （`dec01`–`dec15` 及其变体）、**4 个多错误/宽实参表/作用域用例**。
+
+自检脚本除比对用例之外还做六条断言，**每一条都不可省**（1–3 是实验一时的三条，
+4–6 是实验二加的，防的是同一件事：**防线静默消失、而所有用例照绿**）：
 
 1. **冲突数恰好 3**（`syntax.output` 中恰有 3 个 `State N conflicts: 1 shift/reduce`），
    归属为：
 
    | # | state | 产生式项 | 冲突 |
    |---|---|---|---|
-   | ① | 26 | `CompSt: LC • DefList StmtList RC` | 移进 `error` vs 按 rule 24 (`DefList`) 归约 |
-   | ② | 31 | `DefList: Def • DefList` | 同上（`DefList` 递归，前瞻集不变） |
+   | ① | 27 | `CompSt: LC • DefList StmtList RC` | 移进 `error` vs 按 rule 25 (`DefList`) 归约 |
+   | ② | 32 | `DefList: Def • DefList` | 同上（`DefList` 递归，前瞻集不变） |
    | ③ | 114 | `Stmt: IF LP Exp RP Stmt •` / `\| IF LP Exp RP Stmt • ELSE Stmt` | 悬空 else |
+
+   编号是**当前文法**下的实测值（bison 3.8.2 / 3.5.1 / 3.0.4 三版一致）：实验二
+   新增了 `ExtDef : Specifier FunDec SEMI`，它只多出 **1 个** state 且落在构造序的
+   第 26 位，于是 **≥26 的编号整体 +1**（26→27、31→32、113→114），总 state 数
+   117→118；**冲突个数不变**。**编号只取决于文法，与 Bison 版本无关** —— 在
+   `lab1` 分支上复测，实验一文法的三处冲突是 `26 / 31 / 113`、总 state 数 117，
+   与这里的 `27 / 32 / 114` 是同一件事在两代文法上的取值（`docs/实验报告.md`
+   与 `docs/报告大纲.md` 里另有补注）。
 
    ①② 都由 `Def : error` 引起（**`DefList` 可空**，故"看 `error` 时移进"与
    "按 `DefList → ε` 归约"不可兼得），且都出现在 `CompSt` 一路 —— `error` 能跟在
@@ -144,27 +209,85 @@ bash scripts/run_tests.sh  # 跑 Test/sample 与 Test/err 下全部用例，与�
    改成写 stderr 仍然全绿，而要求书 2.1.3 要求输出到**标准输出**（判分脚本读 stdout）
    —— 合并流会让这条规范悄悄失效。
 
-另有两条单测目标（**不依赖 `scripts/`，因此与自检脚本的有无无关**；需先 `make`
+实验二另加三条同类断言（防的是同一件事：**防线静默消失、而所有用例照绿**）：
+
+4. **官方样例的 `.pairs` 与 `.cmm` 都必须存在**。`.pairs` 钉的是**判分字段**
+   （错误类型 + 行号，要求书 3.1.3 明说这是唯一评分标准），而 `.exp` 钉的是我们的
+   完整文本。`check_pairs` 对没有 `.pairs` 的用例直接 `return 0`，所以**删掉某条
+   官方样例的 `.pairs` 会静默关掉那一层**；同理，把某条官方样例的 `.cmm` 移走
+   会让循环不再迭代它（实测：只留下 `.exp` 与 `.pairs` 时脚本照旧打印
+   "通过 72 个，失败 0 个"并退出 0）。故脚本用一份 **23 个官方样例的名单**同时
+   断言 `.cmm` 与 `.pairs` 的存在 —— 这份名单也顺便充当"哪 23 个是官方样例"的文档，
+   **新增官方样例必须与名单在同一次提交里改**。
+5. **`dec01`–`dec15` 等决策/边界用例必须存在**。设计文档 §8 的十条"要求书未规定"
+   的取舍各自有专属用例钉住当前行为，缺一个就判 FAIL —— 否则改错一条决策不会
+   有任何用例变红。
+6. **`Test/lab2` 存在时至少真跑成一个用例**。`pass > 0` 那条守卫只管实验一那半边：
+   目录在而一个 `.cmm` 都没跑成时会打印"通过 30 个，失败 0 个"并退出 0，
+   整半边哨兵失效。
+
+> **⚠️ `.pairs` 的存亡条件：它必须手抄自要求书，永远不许用脚本从 `./parser`
+> 的输出生成。** 这不是风格要求，是上面第 4 条那层设计的**存亡条件**：`.pairs`
+> 相对于我们的实现是**独立的第二信源**，它的全部价值就在于"我们自己错的时候它
+> 不会跟着错"。一旦用 `sed`/`awk` 从实测输出生成它，两层立刻退化成一层（同一个
+> 来源抄两遍），而**那时不会有任何信号**：所有用例照绿、防线静默消失 —— 与实验一
+> `Test/err/crlf.cmm` 被 `.gitattributes` 规范化掉是同一类失效。当前没有任何机制
+> 能自动发现这一点（`check_pairs` 只比对内容、不问来源），所以只能靠这条文档明令
+> 加代码评审。**改动 `Test/lab2/*.pairs` 时请先确认它的来源是要求书，不是 `./parser`。**
+
+另有六个单测目标（**不依赖 `scripts/`，因此与自检脚本的有无无关**；需先 `make`
 生成 `lex.yy.c` / `syntax.tab.c`）：
 
 ```bash
-make unit-test      # 语法树构造与打印（Test/unit/test_tree）
-make lexer-test     # 词法分析器单独测试（Test/unit/test_lexer）
+make unit-test       # 语法树构造与打印（Test/unit/test_tree）
+make lexer-test      # 词法分析器单独测试（Test/unit/test_lexer）
+make type-test       # 类型表示与等价（Test/unit/test_type）—— 实验二
+make nodetype-test   # NodeType 枚举与名字的映射（Test/unit/test_nodetype）—— 实验二
+make symtab-test     # 符号表：冲突码规则、保留最早（Test/unit/test_symtab）—— 实验二
+make report-test     # 数字错误码 + 同行去重（Test/unit/test_report）—— 实验二
 ```
+
+其中 `type-test` 不是可选项：数组维度顺序写反（`array(2,array(10,int))` 取代
+`array(10,array(2,int))`）**在端到端用例里没有任何症状**（长度不参与判等、维数不变、
+错误 12 只看下标类型），只有这个单测能发现它。
 
 ## 目录结构
 
 ```
 Makefile        make → ./parser 与 ./cc
-src/            Flex 词法规则、Bison 文法、AST 定义与打印、入口、错误上报
-Test/sample/    要求书样例（NN.cmm + NN.exp 逐字手抄）；另有 floatbuf.cmm —— 非样例，
-                是守护 NUMBUF（大浮点值不被截断）的关键用例
-Test/err/       自建边界用例
-Test/unit/      单测（语法树 / 词法分析器）
+src/            lexical.l 词法规则、syntax.y 文法、tree.c AST、report.c 错误上报、
+                main.c 入口；实验二另加三个模块 ——
+                  type.c     类型表示与等价（名等价 / 结构等价）。**纯模块**，
+                             不依赖符号表与 AST，可独立单测
+                  symtab.c   符号表（散列 + 每层作用域链表）；scopeEnter/Exit、
+                             symEnter/symLookup
+                  semantic.c AST 遍历与 19 种检查。依赖 type 与 symtab。
+                依赖方向单向：semantic → symtab → type
+Test/sample/    实验一要求书样例（NN.cmm + NN.exp 逐字手抄）；另有 floatbuf.cmm ——
+                非样例，是守护 NUMBUF（大浮点值不被截断）的关键用例
+Test/err/       实验一自建边界用例（含 crlf.cmm —— 全部价值在 CRLF 上）
+Test/lab2/      实验二用例（NN.cmm + NN.exp；官方样例另配 NN.pairs 钉判分字段）
+Test/regress/   实验一的回归驱动（driver.c 是实验一 main.c 的原样副本）
+Test/unit/      单测（语法树 / 词法分析器 / 类型 / NodeType / 符号表 / 错误上报）
 scripts/        开发期自检脚本（run_tests.sh 等）；**没有对应的 make 目标**
                 （评分流程不需要，见「测试」一节）
-docs/           设计文档、实验报告大纲
+docs/           设计文档、实验报告与大纲（实验一、实验二各一份）
 ```
 
-仓库中**不含**任何构建产物（`*.o`、`lex.yy.c`、`syntax.tab.*`、`parser`、`cc`）
-与 PDF，均由 `.gitignore` 排除。
+仓库中**不含**任何构建产物（`*.o`、`lex.yy.c`、`syntax.tab.*`、`syntax.output`、
+`parser`、`cc`、单测可执行文件）与 PDF，均由 `.gitignore` 排除。实验二报告的
+`.tex` / `.md` 入库，**`.pdf` 不入库**（与实验一同规格）。
+
+**如何生成报告 PDF**：报告 PDF 由 `docs/实验二报告.tex` 现场排版，工具是
+**`xelatex`**（本机只在 WSL 里装了 TeX Live）。必须**编译两遍** —— 第一遍之后
+版式（断行/页数）才收敛，只编一遍得到的页数不作数。为免 `aux`/`log` 落进仓库，
+在临时目录里编译再拷回：
+
+```bash
+mkdir -p /tmp/rpt && cp docs/实验二报告.tex /tmp/rpt/ && cd /tmp/rpt \
+  && xelatex -interaction=nonstopmode 实验二报告.tex && xelatex -interaction=nonstopmode 实验二报告.tex \
+  && cp 实验二报告.pdf "<仓库>/docs/"
+```
+
+实测：xelatex 两遍 → **A4、3 页**，无 overfull 警告（要求书的上限是 3 页、
+最小字号不小于五号；正文基准字号 11pt）。

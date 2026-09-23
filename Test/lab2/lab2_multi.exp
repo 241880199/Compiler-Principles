@@ -1,0 +1,3 @@
+Error type 1 at Line 4: Undefined variable "j".
+Error type 2 at Line 5: Undefined function "k".
+Error type 8 at Line 6: Type mismatched for return.
