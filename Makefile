@@ -7,28 +7,12 @@ SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c src/type.c
          src/symtab.c
 OBJS   = $(SRCS:.c=.o)
 
-# 默认目标**只有** ./parser。
-#
-# 这里刻意不带上 Test/regress/driver：那个驱动的源码在 `Test/regress/`，是**开发期目录**，
-# 交付给评分方的包里只有 src/ + Makefile（外加 Test/sample、Test/err 作样例）。
-# 一旦把 driver 挂进默认目标，凡是没有 Test/regress/driver.c 的包，`make` 会直接
-# 因 "No rule to make target 'Test/regress/driver.o'" 失败 —— **整个程序都编译不出来**。
-# 这与下方"没有 test 目标"的理由是同一条原则：`make` 必须能独立跑通。
-#
-# 需要回归驱动的是 scripts/run_tests.sh，它**自己**调 `make Test/regress/driver`
-# 并在构建失败时响亮退出（见该脚本），把这份依赖留在开发期工具里。
+# 默认目标**只有** ./parser；`make` 必须能在"只有源码 + Makefile"的包里独立跑通。
 all: parser
 
 parser: $(OBJS) syntax.tab.o lex.yy.o
 	$(CC) -o $@ $^ -lfl
 	cp -f parser cc
-
-# 实验一回归驱动：它**不含** src/main.o（自己带 main）、也**不含** src/semantic.o
-# （实验一的 30 个 .exp 装的是语法树与 A/B 错误，不该跑语义分析）。
-REGOBJS = src/tree.o src/report.o src/util.o syntax.tab.o lex.yy.o
-
-Test/regress/driver: Test/regress/driver.o $(REGOBJS)
-	$(CC) -o $@ $^ -lfl
 
 # 两个产物同一条规则生成（`bison -d` 一次写出 .c 与 .h）。
 # 只写 `syntax.tab.c: src/syntax.y` 是不够的：`syntax.tab.h` 被手删后 make 并不知道
@@ -56,6 +40,30 @@ lex.yy.o: lex.yy.c syntax.tab.h src/tree.h src/report.h
 
 %.o: %.c src/tree.h src/report.h src/util.h src/semantic.h src/type.h src/symtab.h
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# PKG-CUT >>> 交付包 Makefile 到此为止（scripts/make_package.sh 取本节以上内容）
+#
+# 下面全是**开发期**规则（Test/unit 单测、Test/regress 回归驱动、以及若干只服务于
+# 本仓库测试语料的注释），它们依赖的目录**不进交付包**，故不随包交付。
+# 交付包的源码平铺在 Code/ 下，没有 src/ 前缀，因此打包脚本会把本节以上的 `src/`
+# 一律去掉 —— 这是唯一一处派生变换，由 scripts/verify_package.sh 在**解包后的实际
+# 产物**上端到端复核（干净目录 make + 与仓库构建逐字节对拍）。
+# 这一行是哨兵：make_package.sh 靠 grep 它来定位切分点，改名会让打包**响亮失败**。
+
+# ── 实验一回归驱动 ────────────────────────────────────────────
+# 它**不含** src/main.o（自己带 main）、也**不含** src/semantic.o（实验一的 30 个
+# .exp 装的是语法树与 A/B 错误，不该跑语义分析）。
+#
+# 刻意**不**挂进默认目标 `all`：驱动源码在 Test/regress/，是开发期目录，交付包里
+# 没有它。一旦挂进去，凡是没有 Test/regress/driver.c 的包，`make` 会直接因
+# "No rule to make target 'Test/regress/driver.o'" 失败 —— **整个程序都编译不出来**。
+# 需要它的是 scripts/run_tests.sh，由它自己调 `make Test/regress/driver` 并在
+# 构建失败时响亮退出（见该脚本）。
+REGOBJS = src/tree.o src/report.o src/util.o syntax.tab.o lex.yy.o
+
+Test/regress/driver: Test/regress/driver.o $(REGOBJS)
+	$(CC) -o $@ $^ -lfl
+
 
 # src/util.c 必须一起链：tree.c 里的 xmalloc/xstrdup 自实验二起搬到了 util.c
 Test/unit/test_tree: Test/unit/test_tree.c src/tree.c src/tree.h src/util.c src/util.h
