@@ -3,8 +3,6 @@
 #include "type.h"
 #include "util.h"
 
-int structEquivalence = 1;   /* 选做 2.3 —— 设计文档 §8 之外，但有明确原文依据 */
-
 static Type newType(TypeKind k) {
     Type t = xmalloc(sizeof *t);
     t->kind = k;
@@ -51,18 +49,6 @@ Type typeArrayFromDims(Type base, const int *dims, int ndims) {
     return t;
 }
 
-/* 结构等价：忽略域名，按位置比域的类型；域数量必须相同。
- * 数组域走 typeEqual 的 TY_ARRAY 分支，即整体比较（基类型 + 维数），
- * **不展开** —— 展开会把要求书 2.3 那对不等价的例子误判为等价。
- * 不会成环：C-- 不允许结构体包含自身（那样的域会先报错误 17）。 */
-static int fieldsEqual(FieldList a, FieldList b) {
-    while (a && b) {
-        if (!typeEqual(a->type, b->type)) return 0;
-        a = a->tail; b = b->tail;
-    }
-    return a == NULL && b == NULL;
-}
-
 int typeEqual(Type a, Type b) {
     if (typeIsUnknown(a) || typeIsUnknown(b)) return 1;   /* 毒化 */
     if (a == b) return 1;
@@ -84,8 +70,12 @@ int typeEqual(Type a, Type b) {
     }
 
     case TY_STRUCTURE:
-        if (!structEquivalence) return a == b;    /* 名等价：指针相等（上面已查过） */
-        return fieldsEqual(a->u.structure.fields, b->u.structure.fields);
+        /* **名等价**（假设 5 的原文口径）：结构体只按名字认类型。同一名字在符号表里
+         * 只有**一个** Type 对象，故"名字相同"就等于"指针相同"—— 上面那句 `a == b`
+         * 已经判过，走到这里就是两个不同名字的结构体 ⇒ 不等价。
+         * 匿名结构体各有一个独有的隐藏名（要求书第二条注记），因此它们彼此也不等价。
+         * 本版本不做选做 2.3，故不按域逐个比较。 */
+        return 0;
 
     default:
         return 0;

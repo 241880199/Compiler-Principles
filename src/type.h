@@ -44,7 +44,4 @@ FieldList typeField(Type structType, const char *name);
 
 void typeToString(Type t, char *buf, int n);
 
-/* 选做 2.3：结构等价。默认 1。置 0 退回名等价（设计文档 §11.5 变异测试 1）。 */
-extern int structEquivalence;
-
 #endif

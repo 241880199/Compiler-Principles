@@ -12,8 +12,7 @@ typedef struct SymEntry {
     /* 函数专用 */
     Type    *params;      /* 形参类型数组 */
     int      nparams;
-    int      defined;     /* 是否已有定义（错误 18） */
-    int      declLine;    /* 首次声明/定义所在行（错误 18 的行号） */
+    int      declLine;    /* 这个名字进入符号表时所处的行 */
     /* 十字链表 */
     int      depth;       /* 所在作用域深度 */
     struct SymEntry *scopeNext;   /* 同一作用域 */
@@ -38,9 +37,6 @@ SymEntry *symLookup(const char *name);
 
 /* 只查当前作用域（判重复定义用）。 */
 SymEntry *symLookupLocal(const char *name);
-
-/* 全局作用域（深度 0）的条目链表头，按插入逆序。错误 18 用它遍历全部函数。 */
-SymEntry *symGlobalList(void);
 
 /* 冲突码规则（设计文档 §8 第 1 条，**这是一个开关点**）：
  * 单一名字空间；按**后定义者的种类**报码 —— 变量→3、结构体→16、函数→4。

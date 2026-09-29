@@ -57,12 +57,23 @@ ExtDef
   : Specifier ExtDecList SEMI   { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | Specifier SEMI              { $$ = newNode("ExtDef", 2, $1, $2); }
   | Specifier FunDec CompSt     { $$ = newNode("ExtDef", 3, $1, $2, $3); }
-/* 错误恢复同步点之外的第二处文法扩展（选做 2.1）：函数声明。
-   附录 A 的 ExtDef 只有三条产生式，没有函数声明，要求书 2.1(c) 明说需要改文法。
-   不与 `Specifier ExtDecList SEMI` 冲突：在 `Specifier` 之后看到 ID 时，状态里
-   同时有 `VarDec: ID •` 与 `FunDec: ID • LP …`；前瞻为 SEMI/COMMA/LB 时归约为
-   VarDec，前瞻为 LP 时移进 —— FunDec 的两条产生式都以 ID LP 开头，LALR(1) 够用。
-   不支持的写法：省略参数名的声明（int foo(int, float)）—— 要求书明说不要求支持。 */
+/* **本版本不做选做 2.1：不支持函数声明。** 这条产生式的作用因此不是"支持声明"，
+   而是**让前端能认出这种写法**，好在语义层逐条拒绝它（见 semantic.c 的 `ED_PROTO`）。
+
+   **为什么不干脆把它删掉**（实测选出来的，不是想当然）：删掉之后 `int f(int a);`
+   由 Bison 的错误恢复报错，而恢复会把**相邻的声明成对吃掉** —— 实测
+   `int f(int a);` / `int g(int b);` / `int h(int c);` 三行相邻只报出第 1、3 行；
+   中间夹一个空行的两条只报出第 1 条。而要求书选做样例 2 给出的"不需要完成要求2.1"
+   期望输出是**每条声明各一条** `Error type B`（那里是第 6、8 行两条）。保留产生式、
+   逐条拒绝，给出的正是要求书那个形状；守护它的用例是 Test/lab2/lab2_declreject.cmm
+   （三行相邻 ⇒ 必须三条，删掉本式立刻变红）。
+
+   **也不在这里的动作里报错**：那样 `hasError()` 为真，main 会整段跳过语义分析
+   （见 src/main.c），于是"声明 + 别处一条语义错"的输入只会剩下一串 B —— 与要求书
+   "需要将它们全部检查出来"相悖。改在语义层报，文件其余部分照常分析。
+
+   代价：本式只新增 1 个 state、**不新增任何冲突**（冲突数哨兵仍是 3，见下方 `Def`
+   一节的编号说明），所以"保留它"在文法是零代价的。 */
   | Specifier FunDec SEMI       { $$ = newNode("ExtDef", 3, $1, $2, $3); }
   | error SEMI                  { $$ = newNode("ExtDef", 2, $1, $2); }
   ;
@@ -134,10 +145,10 @@ DefList
 
      State 27  `CompSt: LC • DefList StmtList RC`
      State 32  `DefList: Def • DefList`          ← 递归式，前瞻集与 State 27 相同
-   （编号为 Task 6 加 `ExtDef : Specifier FunDec SEMI` 之后的实测值；该新产生式
-   只新增 1 个 state 且落在第 26 位，故 ≥26 的编号统一 +1，原先的 26/31 即 27/32。
-   冲突个数不变，理由见上方 `ExtDef` 中新产生式 `Specifier FunDec SEMI` 的说明
-   与 scripts/run_tests.sh 的「冲突数断言」块。）
+   （编号为加 `ExtDef : Specifier FunDec SEMI` 之后的实测值；该产生式只新增 1 个 state
+   且落在第 26 位，故 ≥26 的编号统一 +1，原先的 26/31 即 27/32。冲突个数不变，
+   与 scripts/run_tests.sh 的「冲突数断言」块一致。**本版本保留那条产生式**（它只为
+   逐条拒绝函数声明，见上方 `ExtDef` 一节），所以编号取这一支。）
 
    注意**不是** `StructSpecifier : STRUCT OptTag LC • DefList RC`（State 20）——
    结构体成员表后面只能跟 `RC`，`error` 不进它的前瞻集，那里 `error` 是个无歧义的

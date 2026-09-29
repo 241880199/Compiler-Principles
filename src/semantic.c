@@ -52,8 +52,12 @@ static void      analyzeCompSt(const Node *n, int freshScope);
 
 /* ── ExtDef 的四种形态（设计文档 §3.4）─────────────────────
  * 注意 `ExtDef : error SEMI` 的 child[0] 是 bison 的 error 符号，语义值未定义，
- * 可能是垃圾指针，故一律先判空。该分支在本程序里**不可达** —— 有语法错误时
- * hasError() 为真，main 根本不会调用语义分析。防御而已。 */
+ * 可能是垃圾指针，故一律先判空。
+ *
+ * **ED_PROTO 是"不支持函数声明"的落点**（本版本不做选做 2.1）：文法里那条产生式
+ * 只为认出这种写法，拒绝的动作在本文件里做，见下方 ED_PROTO 分支。
+ * **ED_ERROR 不可达** —— 有 `A`/`B` 错误时 hasError() 为真，main 根本不调用语义分析；
+ * 留着它只是防御，免得去索引一个 `error` 符号的语义值。 */
 typedef enum { ED_GLOBAL_VAR, ED_STRUCT_ONLY, ED_FUNC, ED_PROTO, ED_ERROR } ExtDefKind;
 
 static ExtDefKind extdefKind(const Node *n) {
@@ -722,20 +726,16 @@ static void insertParams(const ParamInfo *ps, int n) {
     }
 }
 
-static int sameSignature(const SymEntry *e, Type retType, const ParamInfo *ps, int n) {
-    int i;
-    if (!typeEqual(e->type, retType)) return 0;
-    if (e->nparams != n) return 0;
-    for (i = 0; i < n; i++)
-        if (!typeEqual(e->params[i], ps[i].type)) return 0;
-    return 1;
-}
-
 /* 登记函数名与签名，并**返回该在函数作用域里登记的形参表**（含被拒的定义，
  * 见下方 ⚠️：*nOut 恒为 nparams、返回值恒为 ps）。形参为什么不在本函数里登记、
  * 而要交给调用方，见 analyzeCompSt 上方那段 ⚠️。
- * 调用前提：curDepth 必须是**全局层**（函数名属于全局作用域，假设 6）。 */
-static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, int *nOut) {
+ * 调用前提：curDepth 必须是**全局层**（函数名属于全局作用域，假设 6）。
+ *
+ * **只处理函数定义。** 本版本不做选做 2.1，文法里没有 `ExtDef : Specifier FunDec SEMI`，
+ * 故没有"声明"这条路径 —— 随之也没有错误 18（声明了但从未定义）与错误 19（声明之间、
+ * 或声明与定义之间冲突）：一个函数名第二次出现，必然是第二次**定义**，即错误 4。
+ * 因此这里不需要比签名，也不需要 `defined` 标志。 */
+static ParamInfo *analyzeFunDec(const Node *n, Type retType, int *nOut) {
     const Node *idNode = n->child[0];
     const char *name = idNode->lexeme;
     int nparams = 0;
@@ -775,27 +775,16 @@ static ParamInfo *analyzeFunDec(const Node *n, Type retType, int isDefinition, i
         e->params   = xmalloc(sizeof(Type) * (size_t)(nparams ? nparams : 1));
         for (i = 0; i < nparams; i++) e->params[i] = ps[i].type;
         e->nparams  = nparams;
-        e->declLine = nodeLine(idNode);
-        if (isDefinition) e->defined = 1;
         return ps;
     }
 
-    /* **两次定义 → 错误 4。这一判必须在签名比较之前**：要求书必做样例 4 的两次
-     * 定义签名就不一致（`int func(int i)` 与 `int func()`），而官方期望输出是
-     * "Error type 4 at Line 6"、**不是 19**；设计文档 §7 的 4 号一行也写明
-     * "与声明无关，专指两次定义"。反过来的顺序（先比签名）会让样例 4 报出 19。 */
-    if (isDefinition && e->defined) {
-        semErr(4, nodeLine(idNode), "Redefined function \"%s\"", name);
-        return ps;
-    }
-
-    /* 其余不一致 = 声明与声明、或声明与定义冲突 → 错误 19（要求书 2.1(b)）*/
-    if (!sameSignature(e, retType, ps, nparams)) {
-        semErr(19, nodeLine(idNode), "Inconsistent declaration of function \"%s\"", name);
-        return ps;
-    }
-    if (isDefinition) e->defined = 1;         /* 声明在前、定义在后且一致 */
-    return ps;                                /* 一致地重复声明 → 合法，不报错（选做 2.1）*/
+    /* **两次定义 → 错误 4。** 函数名已存在且种类是 SYM_FUNC（上面那条判过了别的种类），
+     * 而没有"声明"这一形态，故只剩"已经定义过"这一种可能。
+     * 这一判**与签名无关**：要求书必做样例 4 的两次定义签名就不一致
+     * （`int func(int i)` 与 `int func()`），而官方期望输出是 "Error type 4 at Line 6"、
+     * **不是 19**（设计文档 §7 的 4 号一行："与声明无关，专指两次定义"）。 */
+    semErr(4, nodeLine(idNode), "Redefined function \"%s\"", name);
+    return ps;
 }
 
 /* ── CompSt / ExtDef / 顶层 ──────────────────────────────── */
@@ -863,7 +852,7 @@ static void analyzeExtDef(const Node *n) {
         /* ① 函数名与签名 → **全局作用域**（假设 6），故此时**还没**压函数作用域，
          *    登记完之后才压。② 形参在压好作用域后才登记（决策 3，见 analyzeCompSt
          *    上方那段 ⚠️：顺序反了会让错误 4 变成死代码）。 */
-        ps = analyzeFunDec(n->child[1], ret, /*isDefinition=*/1, &nparams);
+        ps = analyzeFunDec(n->child[1], ret, &nparams);
         scopeEnter();                        /* 函数作用域：形参与函数体同层 */
         curFuncReturn = ret;
         insertParams(ps, nparams);
@@ -872,13 +861,20 @@ static void analyzeExtDef(const Node *n) {
         scopeExit();
         break;
     }
-    case ED_PROTO: {                         /* Specifier FunDec SEMI —— 选做 2.1 */
-        int nparams = 0;
-        ret = analyzeSpecifier(n->child[0]);
-        /* 声明**没有**函数体，故不开作用域、也不登记形参名（只比签名） */
-        analyzeFunDec(n->child[1], ret, /*isDefinition=*/0, &nparams);
+    case ED_PROTO:                           /* Specifier FunDec SEMI —— 不支持，拒绝 */
+        /* **本版本不做选做 2.1：函数声明在这里被拒。** 报一条 type B（与"文法里根本
+         * 没有这条产生式时"Bison 会给出的那条同型），而**不去** `analyzeFunDec` ——
+         * 登记了名字就等于承认了这种写法，还会连带冒出"声明了但从未定义"之类下游噪音。
+         *
+         * 为什么报在这一层而不是文法动作里（两条都是实测/推演出来的）：
+         *   · 报在动作里会让 hasError() 为真，main 整段跳过语义分析（见 src/main.c），
+         *     于是"声明 + 别处一条语义错"的输入只剩一串 B —— 违背要求书"需要将它们
+         *     全部检查出来"。报在这里，文件其余部分照常分析。
+         *   · 行号取 FunDec 的 ID（= 声明所在行），与要求书选做样例 2 的"不完成 2.1"
+         *     档一致（那里期望第 6、8 行各一条）。
+         * 守护：Test/lab2/lab2_declreject.cmm（三行相邻声明 ⇒ 三条 B，缺一即红）。 */
+        reportError('B', nodeLine(n->child[1]->child[0]), "Syntax error");
         break;
-    }
     case ED_ERROR:
         break;
     }
@@ -890,21 +886,6 @@ static void analyzeExtDefList(const Node *n) {   /* ExtDefList : ExtDef ExtDefLi
     analyzeExtDefList(n->child[1]);
 }
 
-/* 错误 18：声明了但没定义。行号取**首次声明/定义**所在行（要求书选做样例 2 → 行 6）。 */
-static void analyzeDeclaredNotDefined(void) {
-    SymEntry *e;
-    /* **这是全项目唯一沿 `scopeNext` 遍历的地方**（Task 4 评审指出）：设计文档
-     * 说符号表的接口与数据结构无关，对 scopeEnter/scopeExit/symEnter/symLookup
-     * 四个函数确实成立（换"每层一条链表 + 线性查找"时调用方不改），但这个循环
-     * 是直接**贴在同层链表上**写的，换结构就得改这里。若将来真换了，加一个
-     * `symNextGlobal(SymEntry *)` 之类的访问器即可恢复"调用方不改"。
-     * 另：`symGlobalList` 的"按插入逆序"是被本循环依赖的性质（错误 18 的输出顺序
-     * 由此确定），而它目前只被一条 `!= NULL` 的弱断言覆盖 —— 见账本里的 Minor。 */
-    for (e = symGlobalList(); e; e = e->scopeNext)
-        if (e->kind == SYM_FUNC && !e->defined)
-            semErr(18, e->declLine, "Undefined function \"%s\"", e->name);
-}
-
 int semanticAnalyze(Node *root) {
     errorCount = 0;
     curFuncReturn = NULL;
@@ -912,6 +893,7 @@ int semanticAnalyze(Node *root) {
     symInit();
     if (!root) return 0;
     analyzeExtDefList(root->child[0]);       /* Program : ExtDefList */
-    analyzeDeclaredNotDefined();
+    /* 没有"文件末尾再扫一遍全局表"这一步 —— 那是错误 18（函数声明了但从未定义）用的，
+     * 而本版本不做选做 2.1，没有声明这一形态。 */
     return errorCount;
 }

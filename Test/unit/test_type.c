@@ -47,76 +47,31 @@ int main(void) {
     u = typeArrayFromDims(floatT, dims, 2);
     check(!typeEqual(t, u), "int[10][2] 不等价于 float[10][2]");
 
-    /* ── 名等价：不同名的结构体不等价 ── */
-    structEquivalence = 0;
+    /* ── 名等价（假设 5 的原文口径）：结构体只按名字认类型 ──
+     * 依据：要求书第二条注记"每个匿名的结构体类型我们认为均具有一个独有的隐藏名字，
+     * 以此进行**名等价**判定"。本版本不做选做 2.3，故不按域逐个比较。 */
     t = typeStruct("A", NULL);
     u = typeStruct("B", NULL);
     check(!typeEqual(t, u), "名等价：struct A != struct B");
-    check(typeEqual(t, t), "名等价：struct A == struct A（同一指针）");
-    /* 匿名结构体各有隐藏名，两个匿名的不等价 */
+    check(typeEqual(t, t), "名等价：struct A == struct A");
+    /* 匿名结构体各有独有隐藏名，两个匿名的不等价 */
     check(!typeEqual(typeStruct("#anon_1", NULL), typeStruct("#anon_2", NULL)),
           "名等价：两个匿名结构体不等价");
-    structEquivalence = 1;
 
-    /* ── 结构等价：忽略域名，按位置比类型 ── */
+    /* ── 判的是**对象同一性**，不是名字字符串 ──
+     * 符号表对每个名字只建一个 Type 对象，故在无错输入上"同名"与"同一对象"是同一件事
+     * （这条同时说明：把 typeEqual 改成 strcmp(名字) 在合法输入上不可观测，
+     * 因此不要"顺手优化"成字符串比较）。 */
+    check(!typeEqual(typeStruct("A", NULL), typeStruct("A", NULL)),
+          "名等价：两个新建的同名 Type 对象不等价（判同一性）");
+
+    /* ── 域逐个相同、但**结构体名字不同** ⇒ 不等价（这是本版本与选做 2.3 的分界）── */
     {
-        /* 要求书 2.3 的等价例子：struct a{int x; float y;} vs struct b{int y; float z;} */
         FieldList fa = xmalloc(sizeof *fa), fb = xmalloc(sizeof *fb);
-        FieldList a2 = xmalloc(sizeof *a2), b2 = xmalloc(sizeof *b2);
-        fa->name = "x"; fa->type = intT;   fa->node = NULL; fa->tail = a2;
-        a2->name = "y"; a2->type = floatT; a2->node = NULL; a2->tail = NULL;
-        fb->name = "y"; fb->type = intT;   fb->node = NULL; fb->tail = b2;
-        b2->name = "z"; b2->type = floatT; b2->node = NULL; b2->tail = NULL;
-        t = typeStruct("a", fa); u = typeStruct("b", fb);
-        check(typeEqual(t, u), "结构等价：忽略域名、按位置比类型 → 等价");
-    }
-
-    /* ── 结构等价：不展开数组（要求书 2.3 的不等价例子）── */
-    {
-        /* A = { int a; struct { float f; int i; } b[10]; } */
-        FieldList ffi = xmalloc(sizeof *ffi), fi = xmalloc(sizeof *fi);
-        Type innerA;
-        FieldList aFields = xmalloc(sizeof *aFields), a2 = xmalloc(sizeof *a2);
-        Type A;
-        int d10[1]; d10[0] = 10;
-
-        /* 内层匿名结构体 { float f; int i; } */
-        ffi->name = "f"; ffi->type = floatT; ffi->node = NULL; ffi->tail = fi;
-        fi->name  = "i"; fi->type = intT;   fi->node = NULL; fi->tail = NULL;
-        innerA = typeStruct("#anon_1", ffi);
-
-        aFields->name = "a"; aFields->type = intT; aFields->node = NULL;
-        aFields->tail = a2;
-        a2->name = "b"; a2->type = typeArrayFromDims(innerA, d10, 1);
-        a2->node = NULL; a2->tail = NULL;
-        A = typeStruct("A", aFields);
-
-        /* B = { struct { int i; float f; } b[10]; int b; } */
-        {
-            FieldList fii = xmalloc(sizeof *fii), fff = xmalloc(sizeof *fff);
-            Type innerB;
-            FieldList bFields = xmalloc(sizeof *bFields), b2 = xmalloc(sizeof *b2);
-            Type B;
-            fii->name = "i"; fii->type = intT;   fii->node = NULL; fii->tail = fff;
-            fff->name = "f"; fff->type = floatT; fff->node = NULL; fff->tail = NULL;
-            innerB = typeStruct("#anon_2", fii);
-
-            bFields->name = "b"; bFields->type = typeArrayFromDims(innerB, d10, 1);
-            bFields->node = NULL; bFields->tail = b2;
-            b2->name = "b"; b2->type = intT; b2->node = NULL; b2->tail = NULL;
-            B = typeStruct("B", bFields);
-
-            check(!typeEqual(A, B),
-                  "结构等价：不展开数组 → A 与 B 不等价（展开的话会误判为等价）");
-        }
-    }
-
-    /* ── 域的数量不同不等价 ── */
-    {
-        FieldList f = xmalloc(sizeof *f);
-        f->name = "x"; f->type = intT; f->node = NULL; f->tail = NULL;
-        check(!typeEqual(typeStruct("P", f), typeStruct("Q", NULL)),
-              "结构等价：域数量不同 → 不等价");
+        fa->name = "x"; fa->type = intT; fa->node = NULL; fa->tail = NULL;
+        fb->name = "x"; fb->type = intT; fb->node = NULL; fb->tail = NULL;
+        check(!typeEqual(typeStruct("a", fa), typeStruct("b", fb)),
+              "名等价：域逐个相同但名字不同 ⇒ 不等价（结构等价是**不做**的选做 2.3）");
     }
 
     /* ── UNKNOWN 与任何类型等价（毒化）── */

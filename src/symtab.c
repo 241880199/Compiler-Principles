@@ -90,7 +90,6 @@ SymEntry *symEnter(const char *name, SymKind kind, Type type, int line, int *err
     e->type      = type;
     e->params    = NULL;
     e->nparams   = 0;
-    e->defined   = 0;
     e->declLine  = line;
     e->depth     = curDepth;
     e->scopeNext = scopeHead[curDepth];
@@ -120,5 +119,3 @@ SymEntry *symLookupLocal(const char *name) {
         if (strcmp(e->name, name) == 0) return e;
     return NULL;
 }
-
-SymEntry *symGlobalList(void) { return scopeHead[0]; }

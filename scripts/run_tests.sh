@@ -136,18 +136,19 @@ fi
 #                   #5 只有未定义结构体 #6 下标是数组 #7 保留最早 #8 UNKNOWN 毒化
 #                   #9 同行去重（两个用例：adjacent 顺序 + nonmono 非单调行号）
 #                   #10 定义先于使用
-# dec11..dec14 不是新增决策，而是**已有规则在边界上的钉**（故不加进设计文档 §8 的十条表）：
-#   dec11 声明 + 签名不一致的**定义** → 19 与 18（定义被拒 ⇒ 终态确实无定义）
-#   dec12 定义在前 + 冲突声明       → 只有 19（定义被接受 ⇒ 不报 18）
+# dec13/dec14 不是新增决策，而是**已有规则在边界上的钉**（故不加进设计文档 §8 的十条表）：
 #   dec13 互相包含的结构体          → 17（全项目唯一"顺序不可倒退"之处，顺序反了就栈溢出）
 #   dec14 被拒定义的形参作用域      → 3（决策 3 扩展到被拒定义上；Task 7 评审缺陷的守卫）
+# 历史上还有 dec11/dec12 两个**纯选做 2.1** 的用例（"声明 + 签名冲突的定义" → 19 与 18、
+# "定义在前 + 冲突声明" → 只有 19）。2026-09-29 随选做 2.1 一并移除：本文法里没有"声明"
+# 这一形态，错误 18/19 两个码不存在，那两个用例的期望输出已无对应行为。
 # 注意 dec09b_nonmono 是**端到端**的判别用例（非单调行号 L→M→L），
 # 它比单测强：走的是真实遍历。不要因为它名字带 b 就以为可以省。
 for d in dec01_namekind dec02_condnotint dec03_paramscope dec04_localstruct \
          dec05_undefonly dec06_arrindex dec07_keepfirst dec08_poison \
-         dec09_sameline dec09b_nonmono dec10_useorder dec11_declconflict \
-         dec12_decl_ok_conflict dec13_mutualstruct dec14_rejecteddef_params \
-         dec15_iforder dec16_structname_as_exp dec17_callorder; do
+         dec09_sameline dec09b_nonmono dec10_useorder dec13_mutualstruct \
+         dec14_rejecteddef_params dec15_iforder dec16_structname_as_exp \
+         dec17_callorder; do
     if [ ! -f "Test/lab2/$d.cmm" ]; then
         # 措辞刻意**不**指向设计文档 §8：名单里 dec11..dec15 本就不在 §8 的十条表里
         # （它们是"已有规则在边界上的钉"，见上）。把排查者引到错误文档比不指路更坏。
@@ -168,15 +169,16 @@ done
 # （错误类型 + 行号），而它自己的保护此前**没有被保护** —— 与上面那条决策用例断言、
 # 以及实验一 crlf.cmm 的运行时断言，防的是同一类失效：防线静默消失、无任何信号。
 #
-# 这份清单**同时充当"哪 23 个是官方样例"的文档**（17 个必做 + 6 个选做）。
+# 这份清单**同时充当"哪些是官方样例"的文档**（17 个必做 + 选做 2.2 的 2 个）。
+# 历史：要求书的 6 个选做样例里，2 个属选做 2.1（函数声明）、2 个属选做 2.3（结构等价），
+# 2026-09-29 随那两个选做一并移除 —— 本版本不做它们，端到端的期望输出已无对应行为。
 # 新增官方样例时必须在**同一提交**里加进这里，否则新样例的 .pairs 被删依旧是静默的。
 for p in lab2_undef_exp lab2_undef_func lab2_dupvar lab2_dupfunc \
          lab2_assign_mismatch lab2_lvalue lab2_operand lab2_return \
          lab2_argcount lab2_notarray lab2_notfunc lab2_subscript2 \
          lab2_notstruct lab2_nofield lab2_dupfield lab2_dupstruct \
          lab2_undefstruct \
-         lab2_declok lab2_declnodef lab2_funcreuse lab2_shadow \
-         lab2_structeq_ok lab2_structeq_bad; do
+         lab2_funcreuse lab2_shadow; do
     # 三样都要判：只有 `.pairs` 那一层被断言过，而 `.cmm` **不见了**同样是防线失效。
     # 实测（Task 12）：把 lab2_dupvar.cmm 移走、留下 .exp 与 .pairs，循环不再迭代它、
     # 脚本照旧打印「通过 72 个，失败 0 个」并退出 0 —— 官方样例静默少了一个，
@@ -217,6 +219,8 @@ done
 # 与 `FunDec: ID • LP …`；前瞻 SEMI/COMMA/LB 归约为 VarDec，前瞻 LP 移进，
 # FunDec 的两条产生式都以 `ID LP` 开头，1 个前瞻符号够用（LALR(1) 足够）。
 # 在 26 之前的 state 编号**未变** —— 下文的 `StructSpecifier` 仍是 State 20。
+# （本版本虽然**不做**选做 2.1，但那条产生式**仍然保留**：它只为在动作里逐条拒绝
+#  函数声明，见 src/syntax.y。所以编号取"带它"的这一支。）
 #
 # ①② 都是 `Def : error`（错误恢复同步点之四，见 src/syntax.y）引起的同一件事：
 # **`DefList` 可空**，于是"看 `error` 时移进"与"按 `DefList → ε` 归约"不可兼得。
@@ -233,6 +237,8 @@ done
 # `error` 后少了一个 state，悬空 else 实际退到 113，但当时只重推了"个数"
 # 没重测"编号"，于是 114 这个错号一直留在注释里（**断言只数个数，抓不到错号**）。
 # 裸 `error` + Task 6 新产生式后实测回到 114，属巧合对上，不是原注释本来正确。
+# 2026-09-29 又把新产生式去掉试过一次（编号退到 26/31/113），随后出于行为原因
+# 又恢复了它（见 src/syntax.y 里"为什么保留产生式"）—— 两次都保持冲突数 3 不变。
 #
 # 这条断言不可省：实测有无 %left LB DOT 的 LR 动作表**完全相同**，
 # 所有 .exp 比对都察觉不到它被误删，只有这个计数能发现。
