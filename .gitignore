@@ -29,3 +29,10 @@ Test/regress/driver
 
 # ── Python 字节码（scripts/fuzz_legal.py 运行时产生）──────────
 __pycache__/
+
+# ── LaTeX 中间产物（编译报告时产生）──────────────────────────
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
