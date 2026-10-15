@@ -29,12 +29,32 @@ StmtKind classifyStmt(Node *s);
  * 本轮尚未接上驱动：src/main.c 要到 Task 12 才调用它。 */
 InterCodeList *translateProgram(Node *root);
 
+/* ── 表达式翻译（Task 8）──────────────────────────────────────────────────
+ * `place` 是**继承属性**：调用方告诉本函数"把值算到哪个操作数里"，而不是让它
+ * 自造临时变量再由调用方搬运。传 NULL 表示"值不被需要"（表达式语句），此时两侧
+ * 仍必须照常翻译 —— 它们可能有副作用（函数调用）。
+ *
+ * 本设计最大的效率来源就在这条协议上：`x = <expr>;` 时不产生
+ * `t := <expr>; x := t` 两条，而是**把 x 自己当 place 传给右子表达式**，只产生一条。
+ * 要求书 4.1.6 样例 1 自己给出的"优化后版本"正是这个形态。
+ * Test/unit/test_translate.c 逐字节钉住它（朴素写法跑出来的程序结果完全相同，
+ * 端到端一个字都察觉不到 —— 只有行数能分辨）。
+ *
+ * 返回为本表达式新增的 IR（挂在传入的 tail 之后）的**新尾**。
+ * `placeIsAddr` 出参：place 是"结果本身是个地址"（数组元素左值）时置 1；
+ * 本任务一律置 0，为 Task 11 预留。 */
+InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *placeIsAddr);
+
 /* ── 名字发生器 ───────────────────────────────────────────────────────────
  * 变量与临时变量**共用编号空间**，避免临时变量与源码变量同名。
- * 声明落在 Task 7、实现落在 Task 8：本轮**不得有任何调用方**
- * （只声明不实现时，一旦有调用方就会链接失败）。 */
+ * 声明落在 Task 7、实现落在 Task 8。 */
 char *newTempName(void);                /* "t1", "t2" … */
 char *newLabelName(void);               /* "label1" … */
 char *varNameOf(const char *srcName);   /* 源码名 -> "v1" …，首次调用时登记 */
+
+/* 把三个计数器与变量映射表一起清零。**只给单测用**：同一进程里连着跑多个用例时，
+ * 不清零的话第二个用例的编号接着第一个往下走（期望值算不出来、也没法读）。
+ * 正常编译流程只在进程开头调用一次（或根本不调），故它不影响产物。 */
+void translateResetNames(void);
 
 #endif

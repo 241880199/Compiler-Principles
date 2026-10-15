@@ -161,6 +161,22 @@ Test/unit/test_expkind: Test/unit/test_expkind.c src/translate.c src/translate.h
 expkind-test: Test/unit/test_expkind
 	@bash -o pipefail -c './Test/unit/test_expkind' && echo "PASS expkind"
 
+# 表达式翻译单测（Task 8）：stdout 逐字节钉住**「place 作为继承属性」**的产物 ——
+# `x = 5;` 必须只有一行 `v1 := #5`，而不是 `t1 := #5` + `v1 := t1` 两行。
+#
+# 这条比对是本单测存在的**唯一**理由：朴素写法与当前写法跑出来的程序结果完全相同，
+# 端到端（parser + 参考机 + .exp）一个字都察觉不到，差别只在 IR 行数上 ——
+# 那是本任务最大的效率来源（报告亮点 1 的论据），只能逐字节钉。
+# 其余用例（二元/取负/链式赋值/括号/值不被需要）写 stderr、以退出码为判据
+# （`-o pipefail` 让非 0 退出码同样能判红），**不往 stdout 写一个字节**。
+Test/unit/test_translate: Test/unit/test_translate.c src/translate.c src/translate.h \
+                          src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_translate.c src/translate.c src/tree.c src/util.c src/ir.c
+
+translate-test: Test/unit/test_translate
+	@bash -o pipefail -c './Test/unit/test_translate | diff -u Test/unit/translate_exp_expected.txt -' \
+	    && echo "PASS translate-exp"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -172,10 +188,11 @@ expkind-test: Test/unit/test_expkind
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test expkind-test
+        ir-abort-test expkind-test translate-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
 	      Test/unit/test_ir Test/unit/test_ir_abort Test/unit/test_expkind \
+	      Test/unit/test_translate \
 	      Test/regress/driver Test/regress/*.o
