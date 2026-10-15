@@ -4,7 +4,7 @@ BISON  = bison
 CFLAGS = -std=c99 -Wall -g -Isrc
 
 SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c src/type.c \
-         src/symtab.c
+         src/symtab.c src/ir.c src/translate.c src/optimize.c
 OBJS   = $(SRCS:.c=.o)
 
 # 默认目标**只有** ./parser；`make` 必须能在"只有源码 + Makefile"的包里独立跑通。
@@ -38,7 +38,8 @@ syntax.tab.o: syntax.tab.c src/tree.h src/report.h
 lex.yy.o: lex.yy.c syntax.tab.h src/tree.h src/report.h
 	$(CC) $(CFLAGS) -c -o $@ lex.yy.c
 
-%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h src/type.h src/symtab.h
+%.o: %.c src/tree.h src/report.h src/util.h src/semantic.h src/type.h src/symtab.h \
+        src/ir.h src/translate.h src/optimize.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # PKG-CUT >>> 交付包 Makefile 到此为止（scripts/make_package.sh 取本节以上内容）
