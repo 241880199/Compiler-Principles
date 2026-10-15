@@ -1,0 +1,18 @@
+int main()
+{
+    int arr[4];
+    int i;
+    int s;
+    i = 0;
+    while (i < 4)
+    {
+        arr[i] = i * 10;
+        i = i + 1;
+    }
+    arr[0] = arr[0] + 7;
+    s = arr[0] + arr[2];
+    write(s);
+    i = 3;
+    write(arr[i]);
+    return 0;
+}

@@ -1,0 +1,21 @@
+int main()
+{
+    int a[10];
+    int i;
+    int s;
+    i = 0;
+    while (i < 10)
+    {
+        a[i] = i * i;
+        i = i + 1;
+    }
+    s = 0;
+    i = 0;
+    while (i < 5)
+    {
+        s = s + a[i * 2 + 1];
+        i = i + 1;
+    }
+    write(s);
+    return 0;
+}

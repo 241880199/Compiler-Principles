@@ -1,0 +1,15 @@
+int f(int p, int q, int r)
+{
+    return p * 100 + q * 10 + r;
+}
+int main()
+{
+    int n;
+    int res;
+    n = read();
+    write(n);
+    res = f(1, 2, 3);
+    write(res);
+    write(f(n, n + 1, n + 2));
+    return 0;
+}

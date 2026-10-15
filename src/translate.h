@@ -56,8 +56,8 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e);
  * 端到端一个字都察觉不到 —— 只有行数能分辨）。
  *
  * 返回为本表达式新增的 IR（挂在传入的 tail 之后）的**新尾**。
- * `placeIsAddr` 出参：place 是"结果本身是个地址"（数组元素左值）时置 1；
- * 本任务一律置 0，为 Task 11 预留。 */
+ * `placeIsAddr` 出参：该表达式可作**左值**（数组元素下标，`a[i]`）时置 1，
+ * 否则置 0（Task 11 起 `Exp1[Exp2]` 会置 1；其余形状一律 0）。 */
 InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *placeIsAddr);
 
 /* ── 条件翻译（Task 9）────────────────────────────────────────────────────

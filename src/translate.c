@@ -1,6 +1,7 @@
 /* AST -> IR。本文件当前含**形状判别表**、**表达式翻译**、**条件翻译**、
- * **语句/复合语句/函数定义翻译**（Task 10）；此后 translateProgram 已是真实现
- * （遍历 Program -> ExtDefList），只差 Task 12 把 src/main.c 接上来。
+ * **语句/复合语句/函数定义翻译**（Task 10）、**调用 / read·write / 一维数组下标**
+ * （Task 11）；translateProgram 已是真实现（遍历 Program -> ExtDefList），
+ * 只差 Task 12 把 src/main.c 接上来。
  *
  * 判别表放在这里而不是散在各翻译函数里：它是整层唯一"读懂语法树结构"的地方，
  * 判错时错的是整棵树的语义，且生成的 IR 往往"看着挺像那么回事"——
@@ -26,8 +27,8 @@
  *   Exp1[Exp2]       -> translateIndex（Task 11）
  *   Exp1.ID          -> translateField（选做 3.1，本实验不实现）
  *
- * 表中出现却尚未实现的那些函数，本文件一律落**响亮失败的桩**（见下面的桩一栏）：
- * 构建能链接，任何过早走到那些路径的情况都会当场 abort，而不是静默产出一份
+ * 表中**尚未实现**的只剩 `translateField`（选做 3.1）—— 它一律落**响亮失败的桩**：
+ * 构建能链接，任何过早走到那条路径的情况都会当场 abort，而不是静默产出一份
  * "看着挺像那么回事"的错 IR。 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -348,7 +349,7 @@ InterCodeList *translateCond(InterCodeList *tail, Node *e,
      * 今天经 syntax.y **到不了**这里（它的二元产生式恰好就是 isKnownBinOp 认的那八个，
      * 见该函数注释），但"低概率"不是"可以静默"的理由 —— 将来 syntax.y 添了第九个二元
      * 运算符、或别处构造出这种结点，这里必须当场诊断 + abort，与本文件其余位置
-     * （classifyExp 的 bad 标签、notImplemented、irRelopCode 的表外文本）的失败形态一致。
+     * （classifyExp 的 bad 标签、shapeError、irRelopCode 的表外文本）的失败形态一致。
      * 注意这里**不是**补一个 `default:` 就完事：那是一句"没见过的形状"，说不清为什么会走到，
      * 故诊断里点名"未知二元运算符 + 会无限自递归"，让看到日志的人立刻知道该去查哪里。 */
     if (k == EX_BINOP && !isKnownBinOp(e->child[1]->name)) {
@@ -369,17 +370,16 @@ InterCodeList *translateCond(InterCodeList *tail, Node *e,
     }
 }
 
-/* ══ 属于后续任务的函数：本任务只落**响亮失败的桩** ══════════════════════════
+/* ══ 统一的"形状不符 ⇒ 响亮失败"（本层各处共用）══════════════════════════════
  *
- * translateExp 的形状要求它调这些函数，但它们的实现分别在 Task 11（调用/数组下标/
- * 非 ID 左值）与选做 3.1（结构体域）。
- * 桩不能"随便兜一个实现"：那会产出一份看着挺像那么回事的错 IR，端到端测不出来。
- * 故一律**诊断 + abort**（与本文件 classifyExp/classifyStmt 的失败形态一致）。
- * 每个桩在 Task N 落地时，把它替换成真实现即可。
- * （Task 9 已经把自己那两个替换掉了：见上面的 translateCond，以及下面两个
- *   ——它们不再是桩，故不在本节的桩清单里。） */
-static void notImplemented(const char *fn, int task) {
-    fprintf(stderr, "internal error: %s 属于 Task %d，尚未实现\n", fn, task);
+ * 形状判错时生成的 IR 往往"看着挺像那么回事"，端到端（parser + 真机 + .exp）测不出来；
+ * 而越界读 / 空指针解引用是**安静的**崩溃。故凡按已知形状取孩子之前，先过一道闸。
+ * 它与 classifyExp/classifyStmt 的 bad 标签、irRelopCode 的表外文本同一套失败形态。
+ * Task 11 之前它定义在文件后半（语句翻译一节）；现上提到调用翻译之前，供
+ * translateArgs 一并使用 —— 定义只有这一处，避免出现两份"形状错误"的措辞。 */
+static void shapeError(const char *what, Node *n) {
+    fprintf(stderr, "internal error: %s 的形状与语法树不符（nchild=%d）at line %d\n",
+            what, n ? n->nchild : -1, n ? nodeLine(n) : 0);
     abort();
 }
 
@@ -422,25 +422,172 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
     return translateCondAsValue(tail, e, place);
 }
 
-/* Task 11：`f()` / `read()`。 */
+/* ══ 调用 / read · write（Task 11）════════════════════════════════════════════
+ *
+ * ★ `read` / `write` **不是**普通函数：语义层把它们当内建（要求书 2.1.4），故这里按
+ *   **函数名特判**，翻译成专门的 IR_READ / IR_WRITE，而不是 `CALL read`。
+ *
+ * ★★ **实参顺序（本任务最易写反、也最难查的一处）**：虚拟机 `ARG` **压栈**、
+ *   `PARAM` **弹栈**（参考机 §3.4；scripts/irsim_ref.py 的 `_step`：ARG 是
+ *   `arg_stack.append`、PARAM 是 `arg_stack.pop`）。故形参 `(a,b,c)` 的实参 `(x,y,z)`
+ *   必须发成 `ARG z / ARG y / ARG x` —— **与源码书写顺序相反**。
+ *   ⇒ `translateArgs` 把每一项追加到（已递归出来的）右侧结果**之后**，于是
+ *     argList = [最右, …, 最左]，`translateCallN` 再按此顺序发 ARG。
+ *   ★ 求值顺序则**从左到右**（先翻 child[0]、再递归 child[2]），IR 因此按源码顺序生成，
+ *     只有"入列顺序"相反 —— 两者别混为一谈。
+ *   守护用例：Test/unit/lab3_call_in.cmm（`f(1,2,3)` ⇒ 123；顺序写反 ⇒ 321）。 */
+
+#define MAX_CALL_ARGS 16
+
+/* Args : Exp | Exp COMMA Args —— 右递归（见 src/syntax.y）。
+ *
+ * 入列顺序 = **源码顺序的逆序**：先递归右侧（更靠后的实参先入列），本项追加到末尾。
+ * 为什么必须逆序：见本节的 ARG/PARAM 说明。
+ * `argList` 是调用方给的定长数组（容量 MAX_CALL_ARGS）；超出即**响亮 abort**
+ * —— 与 varMap 的容量守卫同一纪律：定长表越界会**静默踩内存**，那正是本仓库最怕的失效。 */
+static InterCodeList *translateArgs(InterCodeList *tail, Node *a,
+                                    const char **argList, int *n) {
+    Operand t;
+    if (a == NULL || (a->nchild != 1 && a->nchild != 3)) shapeError("Args", a);
+    t = opVar(newTempName());
+    tail = translateExp(tail, a->child[0], t, NULL);            /* 本项（源码里靠左） */
+    if (a->nchild == 3)
+        tail = translateArgs(tail, a->child[2], argList, n);    /* 更靠后的实参先入列 */
+    if (*n >= MAX_CALL_ARGS) {
+        fprintf(stderr, "internal error: 实参个数超过 %d（translateArgs 定长缓冲）\n",
+                MAX_CALL_ARGS);
+        abort();
+    }
+    argList[(*n)++] = t->name;                                  /* ★ 本项排在它们之后 */
+    return tail;
+}
+
+/* `f()` / `read()`（`Exp : ID LP RP`）。 */
 static InterCodeList *translateCall0(InterCodeList *tail, Node *e, Operand place) {
-    (void)tail; (void)e; (void)place;
-    notImplemented("translateCall0", 11);
-    return NULL;
+    const char *fname = e->child[0]->lexeme;
+    if (strcmp(fname, "read") == 0) {
+        /* read()：值落到 place。值不被需要时**不产任何 IR**（无副作用的丢弃读）。 */
+        if (place) { InterCode *c = newCode(IR_READ); c->u.one.x = place;
+                     return irAppend(tail, c); }
+        return tail;
+    }
+    if (place) { InterCode *c = newCode(IR_CALL);
+                 c->u.call.x = place; c->u.call.f = opFunc(fname);
+                 return irAppend(tail, c); }
+    /* 值不要也得调用：被调函数可能有副作用（write/read/改全局状态）。 */
+    { Operand t = opVar(newTempName());
+      InterCode *c = newCode(IR_CALL);
+      c->u.call.x = t; c->u.call.f = opFunc(fname);
+      return irAppend(tail, c); }
 }
 
-/* Task 11：`f(Args)` / `write(Exp)`。 */
+/* `f(Args)` / `write(Exp)`（`Exp : ID LP Args RP`）。 */
 static InterCodeList *translateCallN(InterCodeList *tail, Node *e, Operand place) {
-    (void)tail; (void)e; (void)place;
-    notImplemented("translateCallN", 11);
-    return NULL;
+    const char *fname = e->child[0]->lexeme;
+    const char *argList[MAX_CALL_ARGS];
+    int n = 0, i;
+    tail = translateArgs(tail, e->child[2], argList, &n);
+
+    if (strcmp(fname, "write") == 0) {
+        /* write(e)：求值后 `WRITE x`。**place 为 NULL 时不补 `place := #0`**
+         * （那是 P2 才要的"write 表达式的值"；`write(e);` 作语句时值不被需要）。 */
+        InterCode *w = newCode(IR_WRITE);
+        w->u.one.x = opVar(argList[0]);
+        tail = irAppend(tail, w);
+        if (place) { InterCode *z = newCode(IR_ASSIGN);
+                     z->u.assign.x = place; z->u.assign.y = opConst(0);
+                     tail = irAppend(tail, z); }
+        return tail;
+    }
+    /* 普通调用：按 argList 顺序发 ARG（= 源码逆序，见本节说明）。 */
+    for (i = 0; i < n; i++) {
+        InterCode *c = newCode(IR_ARG);
+        c->u.one.x = opVar(argList[i]);
+        tail = irAppend(tail, c);
+    }
+    if (place) { InterCode *c = newCode(IR_CALL);
+                 c->u.call.x = place; c->u.call.f = opFunc(fname);
+                 return irAppend(tail, c); }
+    { Operand t = opVar(newTempName());
+      InterCode *c = newCode(IR_CALL);
+      c->u.call.x = t; c->u.call.f = opFunc(fname);
+      return irAppend(tail, c); }
 }
 
-/* Task 11：数组下标。placeIsAddr 那条出参正是为它的左值形态预留的。 */
+/* ══ 一维数组下标（Task 11）════════════════════════════════════════════════════
+ *
+ * `a[i]` 的**元素字节地址** = `&a + i*4`。这里的 `&a` 是 OP_ADDR（渲染成 `&a`），
+ * 只用在"自己就带 &"的位置（ARITH 的操作数），**不是**喂给 IR_ADDR 的那个（见 ir.h
+ * 顶部的"两个 & 的分工"）。
+ *   · i 是常量 K ⇒ 折叠：`addr := &a + #(4K)`；K==0 时省一条 ⇒ `addr := &a`。
+ *   · i 是表达式 ⇒ `idx := i` / `off := idx * #4` / `addr := &a + off`。 */
+
+/* 计算 `Exp1[Exp2]` 的元素地址到一个**新临时变量**并返回该操作数；新增 IR 挂在 `*p` 后
+ * （`*p` 就地前进到新尾）。
+ *
+ * 本任务只支持**一维、基础表达式是数组名（ID）**。基础表达式非数组名（如 `f()[i]`、
+ * 结构体域下标）一律**响亮失败**，绝不静默按一维数组算 —— 那会产出一份看着挺像那么回事、
+ * 地址却算错的 IR，端到端测不出来。
+ * ★ **已知边界（不是本函数能判的）**：数组**形参**的名字也是 ID，而本层**没有类型信息**
+ *   （只看得到名字），无法与普通数组名区分 ⇒ 若输入出现数组形参，这里会按普通数组算
+ *   `&a + i*4`（错）。brief 把"数组形参"划归 **Task 14**（那里会另行处理"基础表达式本身
+ *   已是地址"的情形），故本任务范围内不涉及；此处如实标注，不假装它能判。 */
+static Operand arrayElemAddr(InterCodeList **p, Node *e) {
+    Node *idxExp, *b;
+    Operand base, addr;
+    InterCode *c;
+
+    /* e = Exp LB Exp RB（classifyExp 判为 EX_INDEX ⇒ nchild==4 且 child[1] 是 LB）。 */
+    if (e == NULL || e->nchild != 4) shapeError("Exp[Exp]", e);
+    /* 基础表达式剥掉括号后必须是数组名（`(a)[i]` 与 `a[i]` 同义，括号不产生 IR）。 */
+    b = e->child[0];
+    while (b != NULL && classifyExp(b) == EX_PAREN) b = b->child[1];
+    if (b == NULL || classifyExp(b) != EX_ID) {
+        fprintf(stderr, "internal error: 数组下标的基础表达式只能是数组名（本任务仅一维；"
+                        "高维属 Task 13、数组形参属 Task 14）at line %d\n", nodeLine(e));
+        abort();
+    }
+    base = opAddr(varNameOf(b->child[0]->lexeme));             /* b 是 Exp:ID */
+    idxExp = e->child[2];
+
+    if (classifyExp(idxExp) == EX_INT) {                       /* ★ 常量下标折叠 */
+        int k = atoi(idxExp->child[0]->lexeme);
+        addr = opVar(newTempName());
+        if (k == 0) {                                          /* `addr := &a`（省一条 ADD） */
+            c = newCode(IR_ASSIGN);
+            c->u.assign.x = addr; c->u.assign.y = base;
+        } else {                                               /* `addr := &a + #(4K)` */
+            c = newCode(IR_ADD);
+            c->u.binop.x = addr; c->u.binop.y = base; c->u.binop.z = opConst(4 * k);
+        }
+        *p = irAppend(*p, c);
+    } else {                                                   /* 变量下标 */
+        Operand idx = opVar(newTempName());
+        Operand off = opVar(newTempName());
+        *p = translateExp(*p, idxExp, idx, NULL);              /* idx := <下标表达式> */
+        c = newCode(IR_MUL);                                   /* off := idx * #4 */
+        c->u.binop.x = off; c->u.binop.y = idx; c->u.binop.z = opConst(4);
+        *p = irAppend(*p, c);
+        addr = opVar(newTempName());
+        c = newCode(IR_ADD);                                   /* addr := &a + off */
+        c->u.binop.x = addr; c->u.binop.y = base; c->u.binop.z = off;
+        *p = irAppend(*p, c);
+    }
+    return addr;
+}
+
+/* `Exp1[Exp2]` 作**右值**：算出元素地址后 `place := *addr`（IR_ASSIGN_DEREF）。
+ * placeIsAddr 出参置 1，标记"本结点可作左值（其地址是 arrayElemAddr 的结果）"——
+ * 左值路径（translateAssignToLValue）复用的正是同一个 arrayElemAddr。 */
 static InterCodeList *translateIndex(InterCodeList *tail, Node *e, Operand place, int *placeIsAddr) {
-    (void)tail; (void)e; (void)place; (void)placeIsAddr;
-    notImplemented("translateIndex", 11);
-    return NULL;
+    Operand addr = arrayElemAddr(&tail, e);
+    if (place) {
+        InterCode *c = newCode(IR_ASSIGN_DEREF);               /* place := *addr */
+        c->u.deref.x = place; c->u.deref.y = addr;
+        tail = irAppend(tail, c);
+    }
+    if (placeIsAddr) *placeIsAddr = 1;
+    return tail;
 }
 
 /* 选做 3.1：结构体域 `Exp.ID`。**本实验不实现**，故它永远走桩。
@@ -453,11 +600,38 @@ static InterCodeList *translateField(InterCodeList *tail, Node *e, Operand place
     abort();
 }
 
-/* Task 11：非 ID 左值的赋值（`a[i] = ...`）。 */
+/* ══ 非 ID 左值的赋值（`a[i] = <expr>`）（Task 11）════════════════════════════
+ *
+ * 先算出元素**地址**，再把右值算进一个**普通临时变量**，最后 `*addr := t`
+ * （IR_DEREF_ASSIGN）。
+ *
+ * ★★ **绝不能生成 `*t := a op b`**（spec §3.7-2）：真机 `ARITH` 的写回目标是
+ *    `mem[symTable[x][0] // 4]`，只做裸下标 —— `tableInsert` 早把 `*` 剥掉，表里没有
+ *    `*t` 这个键 ⇒ **KeyError 崩**（参考机逐字复现，见 Test/lab3/unit_exec/test_exec.py
+ *    的 deref_arith 用例）。故右值一定先落到**普通**临时变量，再走 IR_DEREF_ASSIGN
+ *    （它渲染 `*addr := t`，真机 `MOV` 的 `store_var` **支持** `*` 目标）——这正是本
+ *    功能绕开那个真机缺口的写法。 */
 static InterCodeList *translateAssignToLValue(InterCodeList *tail, Node *e, Operand place) {
-    (void)tail; (void)e; (void)place;
-    notImplemented("translateAssignToLValue", 11);
-    return NULL;
+    Node *lhs = e->child[0];
+    if (classifyExp(lhs) == EX_INDEX) {                        /* a[i] = <expr> */
+        Operand addr = arrayElemAddr(&tail, lhs);
+        Operand val = opVar(newTempName());
+        InterCode *c;
+        tail = translateExp(tail, e->child[2], val, NULL);     /* t := <右值> */
+        c = newCode(IR_DEREF_ASSIGN);                          /* *addr := t */
+        c->u.deref.x = addr; c->u.deref.y = val;
+        tail = irAppend(tail, c);
+        if (place) {                                           /* 赋值表达式的值还要用 */
+            c = newCode(IR_ASSIGN);
+            c->u.assign.x = place; c->u.assign.y = val;
+            tail = irAppend(tail, c);
+        }
+        return tail;
+    }
+    /* 结构体域左值（`s.x = ...`）属选做 3.1，本实验不实现 —— 响亮失败。 */
+    fprintf(stderr, "internal error: 非 ID / 非数组下标的左值赋值不支持"
+                    "（结构体域属选做 3.1）at line %d\n", nodeLine(e));
+    abort();
 }
 
 /* ══ 表达式翻译（Task 8 Step 2）═════════════════════════════════════════════
@@ -616,16 +790,6 @@ InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *pl
  * 而不是本仓库要求的响亮 abort，故每个取值点前都有 shapeError 这道闸。
  */
 
-/* 形状与语法树不符时的**响亮失败**（本层统一的失败形态，与 classifyExp/classifyStmt
- * 的 bad 标签、notImplemented、irRelopCode 的表外文本同一套）。
- * 为什么值得每个判别点都挂一个：形状判错时生成的 IR 往往"看着挺像那么回事"，
- * 端到端（parser + 真机 + .exp）测不出来；而越界读/空指针解引用是**安静的**崩溃。 */
-static void shapeError(const char *what, Node *n) {
-    fprintf(stderr, "internal error: %s 的形状与语法树不符（nchild=%d）at line %d\n",
-            what, n ? n->nchild : -1, n ? nodeLine(n) : 0);
-    abort();
-}
-
 /* VarDec 的**最内层**名字：`VarDec : ID` 或 `VarDec : VarDec LB INT RB`。
  * brief 的说法是"沿 child[0] 下行到只有一个孩子的结点"——这里显式写成"前进到不再是
  * 四孩子的 VarDec 为止"，语义相同而少一次越界机会。形状不对时响亮失败：
@@ -641,14 +805,52 @@ static const char *leafIdName(Node *vd) {
     return vd->child[0]->lexeme;
 }
 
+/* ── 数组声明的维数与总字节数（Task 11）────────────────────────────────────
+ *
+ * `VarDec : ID | VarDec LB INT RB`，沿 child[0] 下行收集。dims 的收集顺序是
+ * **最内层在前**（先递归到内层、再记本层），与 type.h 的 `typeArrayFromDims` 同一约定
+ * （设计文档 §5.1 / 记忆里那条"数组维度顺序"的坑）：`int a[10][2]` 的 AST 是
+ * `VarDec[VarDec[VarDec[a],LB,2,RB],LB,10,RB]` ⇒ 先得 2、再得 10 ⇒ dims=[2,10]。
+ * 本任务只有一维（长度不参与判等，故反了端到端测不出来）—— 约定仍必须写对。
+ *
+ * Dims.dims 定长：写入前查容量（同 varMap 的纪律）—— 溢出会**静默越界写**，
+ * 那不是本仓库的失败形态。 */
+typedef struct { int dims[8]; int n; } Dims;
+
+static void collectDims(Node *vd, Dims *d) {
+    if (vd->nchild == 1) return;                 /* VarDec : ID —— 到最内层 */
+    collectDims(vd->child[0], d);                /* 先到内层 */
+    if (d->n >= (int)(sizeof d->dims / sizeof d->dims[0])) {
+        fprintf(stderr, "internal error: 数组维数超过 %d（Dims.dims 定长）\n",
+                (int)(sizeof d->dims / sizeof d->dims[0]));
+        abort();
+    }
+    d->dims[d->n++] = atoi(vd->child[2]->lexeme);/* 再记本层（LB 与 RB 之间是 INT） */
+}
+
+/* 数组总字节数 = 各维之积 × 4（本实验只有 int，宽度 4）。 */
+static int arrayTotalSize(Node *vd) {
+    Dims d; int i, total = 1;
+    d.n = 0;
+    collectDims(vd, &d);
+    for (i = 0; i < d.n; i++) total *= d.dims[i];
+    return total * 4;
+}
+
 /* VarDec 的**声明**部分。
- * ★ 本任务**只做登记**（`varNameOf`）：登记顺序 = 书写顺序，这正是 IR 里的编号与源码
- * 顺序一致的原因，也是要求书 4.1.6 样例 2 里 `fact` 的形参拿到 v1、main 的
- * `int m, result;` 拿到 v2/v3 的原因（v 号不是"用到时候"才发的）。
- * ★ 数组的 `DEC v size` 与地址计算属 **Task 11**（要 collectDims/arrayTotalSize），
- * 本任务**不**发 DEC，也不做半个 —— 半成品的 DEC 会算出错的地址，端到端只是"结果不对"。 */
+ * 登记名字（`varNameOf`）：登记顺序 = 书写顺序，这正是 IR 里的编号与源码顺序一致的
+ * 原因，也是要求书 4.1.6 样例 2 里 `fact` 的形参拿到 v1、main 的 `int m, result;`
+ * 拿到 v2/v3 的原因（v 号不是"用到时候"才发的）。
+ * ★ **数组**（含多维）另发一条 `DEC v <总字节>`（Task 11）：它是虚拟机为该数组分配
+ *   地址的依据，漏了它则 `&a` 在真机上查不到、数组整个不可用。非数组不发 DEC。 */
 static InterCodeList *translateVarDec(InterCodeList *tail, Node *vd) {
-    (void)varNameOf(leafIdName(vd));
+    const char *name = varNameOf(leafIdName(vd));
+    if (vd->nchild == 4) {                       /* VarDec : VarDec LB INT RB ⇒ 数组 */
+        InterCode *c = newCode(IR_DEC);
+        c->u.dec.x = opVar(name);
+        c->u.dec.size = arrayTotalSize(vd);
+        tail = irAppend(tail, c);
+    }
     return tail;
 }
 

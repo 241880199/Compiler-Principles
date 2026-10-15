@@ -245,6 +245,54 @@ prog-test: Test/unit/test_translate_prog
 	    rm -f $$out $$err; \
 	    if [ $$rc -eq 0 ]; then echo "PASS translate-prog"; fi; exit $$rc'
 
+# ── 调用 / read · write / 一维数组下标（Task 11）──────────────────────────────
+# 与 prog-test **同一套三重断言**（退出码 / stderr 空 / stdout 逐字节），只是换了输入与期望；
+# 输入仍由**真 lexer/parser** 解析（同一个 `test_translate_prog` 二进制，读 stdin）。
+# 为什么另建夹具而不追加进 lab3_prog_in.cmm：那里的期望逐字节钉住 Task 10 的语句/函数翻译，
+# 夹具与期望一一对应；混进 Task 11 的新形状只会让"某条红线属于哪个任务"含糊。
+#
+# 两类夹具**分开成两个目标**，正是为了让两类变异各自**恰好**打红一条（见
+# .superpowers/sdd/lab3/task-11-report.md 的变异自证）：
+#   · 把 translateArgs 的逆序改成正序 ⇒ 只有 call-test 红（ARG 顺序变了，值也随之变错）；
+#   · 去掉常量下标折叠               ⇒ 只有 arr-test 红（`&a + #8` 变成 `idx := i*4` 再相加）。
+#
+# 每个目标第二段把生成的 IR **丢进参考机（scripts/irsim_ref.py）执行**，比对 WRITE 输出 ——
+# 证明逐字节钉住的那份 IR 不只是"我们的输出"，而是**语义正确**的。
+# 判据链上没有一处是我们的手抄：输入是真源码、IR 是真 parser+翻译层的产物、
+# 期望 IR 与期望输出都是**实测钉住**的（对 call 夹具，参考机把 f(1,2,3) 算成 123；
+# 若 ARG 顺序写反，同一份 IR 会跑出 321 并当场打红第二段）。
+call-test: Test/unit/test_translate_prog
+	@bash -c 'set -u; rc=0; \
+	    PY="$$(command -v python3 || command -v python)"; \
+	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=build/t11_call.ir; \
+	    ./Test/unit/test_translate_prog < Test/unit/lab3_call_in.cmm >$$out 2>$$err; prc=$$?; \
+	    if [ $$prc -ne 0 ]; then echo "FAIL call-test: 退出码 $$prc（yyparse 失败或内部 abort）"; rc=1; fi; \
+	    if [ -s $$err ]; then echo "FAIL call-test: stderr 非空（正常流程不得写 stderr）"; sed "s/^/      /" $$err | head -10; rc=1; fi; \
+	    if ! diff -u Test/unit/translate_call_expected.txt $$out; then echo "FAIL call-test: stdout 与期望不符"; rc=1; fi; \
+	    cp -f $$out $$ir; \
+	    if ! "$$PY" -I scripts/irsim_ref.py --run $$ir --in Test/unit/lab3_call.in >$$got 2>$$err; then \
+	        echo "FAIL call-test: 参考机执行失败"; sed "s/^/      /" $$err | head -5; rc=1; fi; \
+	    tail -n +2 $$got > $$got.v; mv $$got.v $$got; \
+	    if ! diff -u Test/unit/lab3_call_out.txt $$got; then echo "FAIL call-test: 参考机 WRITE 输出与期望不符"; rc=1; fi; \
+	    rm -f $$out $$err $$got; \
+	    if [ $$rc -eq 0 ]; then echo "PASS call-test"; fi; exit $$rc'
+
+arr-test: Test/unit/test_translate_prog
+	@bash -c 'set -u; rc=0; \
+	    PY="$$(command -v python3 || command -v python)"; \
+	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=build/t11_arr.ir; \
+	    ./Test/unit/test_translate_prog < Test/unit/lab3_arr_in.cmm >$$out 2>$$err; prc=$$?; \
+	    if [ $$prc -ne 0 ]; then echo "FAIL arr-test: 退出码 $$prc（yyparse 失败或内部 abort）"; rc=1; fi; \
+	    if [ -s $$err ]; then echo "FAIL arr-test: stderr 非空（正常流程不得写 stderr）"; sed "s/^/      /" $$err | head -10; rc=1; fi; \
+	    if ! diff -u Test/unit/translate_arr_expected.txt $$out; then echo "FAIL arr-test: stdout 与期望不符"; rc=1; fi; \
+	    cp -f $$out $$ir; \
+	    if ! "$$PY" -I scripts/irsim_ref.py --run $$ir >$$got 2>$$err; then \
+	        echo "FAIL arr-test: 参考机执行失败"; sed "s/^/      /" $$err | head -5; rc=1; fi; \
+	    tail -n +2 $$got > $$got.v; mv $$got.v $$got; \
+	    if ! diff -u Test/unit/lab3_arr_out.txt $$got; then echo "FAIL arr-test: 参考机 WRITE 输出与期望不符"; rc=1; fi; \
+	    rm -f $$out $$err $$got; \
+	    if [ $$rc -eq 0 ]; then echo "PASS arr-test"; fi; exit $$rc'
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -256,7 +304,7 @@ prog-test: Test/unit/test_translate_prog
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test expkind-test translate-test cond-test prog-test
+        ir-abort-test expkind-test translate-test cond-test prog-test call-test arr-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

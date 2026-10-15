@@ -1,0 +1,11 @@
+int f(int a, int b, int c)
+{
+    return a * 100 + b * 10 + c;
+}
+int main()
+{
+    int r;
+    r = f(1, 2, 3);
+    write(r);
+    return 0;
+}
