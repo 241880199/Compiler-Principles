@@ -13,7 +13,16 @@
  *     与 translate_exp_expected.txt 逐字节 diff（那才是"守护"本身）；
  *   · 其余用例（二元运算、取负、链式赋值、括号、值不被需要的表达式）写 stderr、
  *     以退出码为判据。它们**不得**往 stdout 写一个字节 —— 会污染上面那条比对。
- */
+ *
+ * ★★ **这些期望是刻意钉住"当前形态"的**：下面多处断言硬编码了 `v1`/`v2`/`t1`/`t2`
+ *    以及"经过临时变量"的形态（例如 `x = 1 + 2;` 期望 `t1 := #1` / `t2 := #2` /
+ *    `v1 := t1 + t2`）。要求书与本任务的设计文档都**没有**规定这套编号 —— 它们守护的
+ *    其实就是上面那条主张："该是一条 IR 的时候就是一条，不是两条"。
+ *    将来的优化 pass（Task 16 起：常量折叠、结果直达、立即数内联…）**必然会**改变
+ *    这些形态（行数会变少、临时变量名会变）。届时**必须有意地、逐条地修订这些期望**，
+ *    把新形态重新钉死；**不许**用"放宽断言 / 改成子串匹配 / 只数行数"之类的方式让它们
+ *    变绿 —— 那等于把本文件唯一的守护（逐字节钉住 place 协议）悄悄废掉。 */
+
 /* ★ 必须在任何 include 之前：Makefile 用 `-std=c99`（严格 ISO C99），open_memstream
  * 在该模式下不声明，漏这行会得到 implicit declaration 警告（"零 gcc 警告"当场变红）。 */
 #define _POSIX_C_SOURCE 200809L
@@ -138,6 +147,20 @@ int main(void) {
         translateExp(t, newNode("Exp", 1, newToken("ID", 1, "x")), NULL, &flag);
         if (flag != 0) { fprintf(stderr, "FAIL placeIsAddr: got %d want 0\n", flag); failures++; }
         else fprintf(stderr, "ok   placeIsAddr 置 0\n");
+    }
+
+    /* ══ ⑨ place == NULL 的一元取负：`-1;` —— 值不要，也不该为它产出任何 IR ══
+     * 取负本身没有副作用（`-f();` 那种要等 Task 10 把调用桩换成真实现才能测），
+     * 故 `-1;` 的期望**恰好是 0 行**：place 为 NULL 时既不给右子表达式领临时变量，
+     * 也不生成 `place := #0 - t1`（见 translateExp 的 EX_UNARY 分支）。这条钉住
+     * "place 为空 ⇒ 不产 IR"这条边界，与上面 ⑦ 的 `1 + 2;` 互为对照。 */
+    translateResetNames();
+    {
+        Node *neg = newNode("Exp", 2, newToken("MINUS", 1, "-"),
+                            newNode("Exp", 1, newToken("INT", 1, "1")));
+        InterCodeList *t = irList();
+        translateExp(t, neg, NULL, NULL);
+        expectIR(t, "", "-1;（值不被需要时产出 0 行 IR）");
     }
 
     fprintf(stderr, failures ? "FAILURES=%d\n" : "ALL PASS\n", failures);

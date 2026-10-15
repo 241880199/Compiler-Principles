@@ -50,7 +50,9 @@ InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *pl
  * 声明落在 Task 7、实现落在 Task 8。 */
 char *newTempName(void);                /* "t1", "t2" … */
 char *newLabelName(void);               /* "label1" … */
-char *varNameOf(const char *srcName);   /* 源码名 -> "v1" …，首次调用时登记 */
+/* 源码名 -> "v1" …，首次调用时登记。返回**指向表内字符串的借用指针**（const，
+ * 调用方不得改动或释放；opVar 拿到后会自己再复制一份）。 */
+const char *varNameOf(const char *srcName);
 
 /* 把三个计数器与变量映射表一起清零。**只给单测用**：同一进程里连着跑多个用例时，
  * 不清零的话第二个用例的编号接着第一个往下走（期望值算不出来、也没法读）。

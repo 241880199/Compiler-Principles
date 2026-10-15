@@ -114,9 +114,11 @@ bad:
 
 /* ══ 名字发生器（Task 8 Step 3）══════════════════════════════════════════════
  *
- * 变量与临时变量**共用编号空间**：`varNameOf` 产出 "v1","v2"…，`newTempName` 产出
- * "t1","t2"…。t/v 两个前缀不会撞，但共用计数器让"哪个名字是第几个出现的"始终单调，
- * 便于人读产物、也便于单测写期望（编号与登记顺序一一对应）。
+ * 变量与临时变量**共用编号空间**（前缀 `t`/`v` 区分，计数器各自独立）：`varNameOf`
+ * 产出 "v1","v2"…，`newTempName` 产出 "t1","t2"…。两个前缀不会撞；各自的计数器让
+ * "哪个名字是第几个出现的"始终单调，便于人读产物、也便于单测写期望（编号与登记
+ * 顺序一一对应）——注意**不是**共用同一个计数器：生成一个临时变量不会消耗一个变量号。
+ * 与 src/translate.h 中那句说明对齐。
  *
  * `varNameOf` 的表是**平的**：要求书假设 4 保证所有变量不重名（同名一律已被语义
  * 分析报错拦下），故不需要按作用域分层的映射 —— 一张源码名 -> IR 名的对照表就够。
@@ -138,16 +140,38 @@ char *newLabelName(void) {
     return xstrdup(buf);
 }
 
-char *varNameOf(const char *src) {
+const char *varNameOf(const char *src) {
     int i;
     for (i = 0; i < varMapN; i++)
-        if (strcmp(varMap[i].src, src) == 0) return (char *)varMap[i].ir;
+        if (strcmp(varMap[i].src, src) == 0) return varMap[i].ir;
+    /* ★ 定长表，**写入前必须查容量**：溢出会**静默越界写** —— 没有诊断、没有 abort，
+     * 还会踩到同 TU 里的其它静态变量（tmpSeq/varSeq 就在旁边），产出一份"看着挺像
+     * 那么回事"的错 IR。这与本仓库"响亮失败"的纪律正好相反。课程用例远到不了 1024 个
+     * 变量名，但低概率不是"可以静默"的理由，故超限即响亮 abort。 */
+    if (varMapN >= (int)(sizeof varMap / sizeof varMap[0])) {
+        fprintf(stderr, "internal error: varMap 溢出（>1024 个变量名）\n");
+        abort();
+    }
     { char buf[32]; snprintf(buf, sizeof buf, "v%d", ++varSeq);
       varMap[varMapN].src = xstrdup(src); varMap[varMapN].ir = xstrdup(buf); varMapN++; }
-    return (char *)varMap[varMapN - 1].ir;
+    return varMap[varMapN - 1].ir;
 }
 
-void translateResetNames(void) { tmpSeq = labelSeq = varSeq = varMapN = 0; }
+/* 重置三个计数器与变量映射表。**只给单测用**（见 translate.h 的说明）：同一进程里
+ * 连着跑多个用例时不清零的话，编号会接着上个用例往下走，期望值算不出来、也没法读。
+ *
+ * 表里 xstrdup 出来的字符串在这里一并 free —— 不释放的话每个用例泄漏一批，且槽位里
+ * 留着上个用例的内容，调试时看变量表会被误导。释放是安全的：调用方（opVar）拿到名字
+ * 时会**自己再复制一份**放进 IR，产物里的操作数不指向这里的字符串；真实编译流程只在
+ * 进程开头调它一次（或根本不调），那时表是空的，循环不做事。 */
+void translateResetNames(void) {
+    int i;
+    for (i = 0; i < varMapN; i++) {
+        free((void *)varMap[i].src);
+        free((void *)varMap[i].ir);
+    }
+    tmpSeq = labelSeq = varSeq = varMapN = 0;
+}
 
 /* ══ 属于后续任务的函数：本任务只落**响亮失败的桩** ══════════════════════════
  *
