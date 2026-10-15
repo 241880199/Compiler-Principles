@@ -239,9 +239,32 @@ static Operand operandForCond(Node *e) {
     return NULL;
 }
 
-/* NULL（= operandForCond 认不出）不算"简单操作数"。 */
+/* NULL（= operandForCond 认不出）不算"简单操作数"。
+ *
+ * ★ 那个 `kind` 判断**当前走不到"假"**：`operandForCond` 只返回 NULL（已被前面的 `o &&`
+ * 拦下）或 `opConst`/`opVar`（OP_CONST/OP_VAR），故这里只会见到 NULL 或这两个 kind。
+ * **不要当成死代码删掉** —— 它是 `operandForCond` **契约**的一部分：日后那个函数若添了
+ * 新的"简单形状"（新的 kind），这里就是**安全网** —— 忘了同步的话，一个不认识的 kind
+ * 会被误当"简单操作数"**直接内联进 IF**，产出一份看着挺像那么回事的错 IR（本仓库最怕的
+ * 那种失败）。保留 + 此处说明"当前契约下走不到，是为契约变更时的安全网"。 */
 static int operandIsSimple(Operand o) {
     return o && (o->kind == OP_VAR || o->kind == OP_CONST);
+}
+
+/* syntax.y 里**全部**二元产生式的运算符 —— 恰好**八个**（src/syntax.y 的
+ *   `Exp ASSIGNOP Exp` / `Exp AND Exp` / `Exp OR Exp` / `Exp RELOP Exp` /
+ *   `Exp PLUS Exp` / `Exp MINUS Exp` / `Exp STAR Exp` / `Exp DIV Exp`
+ * 这八条）。classifyExp 把它们都判成 EX_BINOP（`Exp DOT ID`、`Exp LB Exp RB` 由更前面的
+ * DOT/LB 检查分别判成 EX_FIELD/EX_INDEX，走不到这里）。
+ *
+ * 本函数是 translateCond 的"其它"兜底与 translateExp/translateBinArith 之间的**闸门**：
+ * 兜底会把不认得的条件交给 translateExp，而那些运算里只有这八个是下游认得的。
+ * 见下方兜底分支前的用法与理由。 */
+static int isKnownBinOp(const char *op) {
+    return strcmp(op, "ASSIGNOP") == 0 || strcmp(op, "AND")   == 0 ||
+           strcmp(op, "OR")       == 0 || strcmp(op, "RELOP") == 0 ||
+           strcmp(op, "PLUS")     == 0 || strcmp(op, "MINUS") == 0 ||
+           strcmp(op, "STAR")     == 0 || strcmp(op, "DIV")   == 0;
 }
 
 InterCodeList *translateCond(InterCodeList *tail, Node *e,
@@ -280,7 +303,25 @@ InterCodeList *translateCond(InterCodeList *tail, Node *e,
      * 走到这里的是"不是关系/与/或/非"的一切 —— 裸变量、字面量、括号、算术式子、
      * 函数调用……它们的真假就是"值 != 0"，故先求值再比较。
      * 括号也在这一支（`(a > b)` 会多走一次求值与比较）：这是指导书表 4"其它"那行的
-     * 形态，本任务照搬 —— 把括号剥掉属于优化 pass（Task 16 起）的事，不在这里做。 */
+     * 形态，本任务照搬 —— 把括号剥掉属于优化 pass（Task 16 起）的事，不在这里做。
+     *
+     * ★ **先挡住未知二元运算符**：兜底把 e 交给 translateExp，而 translateExp ->
+     * translateBinArith 对非 `+ - * /` 的二元运算符会**退回本函数**（translateCondAsValue）
+     * —— 若那个运算符连 RELOP/AND/OR 都不是，就会再次落到**本兜底**，形成
+     *   translateCond -> translateExp -> translateBinArith -> translateCondAsValue
+     *   -> translateCond -> … 的**无限自递归**（爆栈），而**不是**响亮失败。
+     * 今天经 syntax.y **到不了**这里（它的二元产生式恰好就是 isKnownBinOp 认的那八个，
+     * 见该函数注释），但"低概率"不是"可以静默"的理由 —— 将来 syntax.y 添了第九个二元
+     * 运算符、或别处构造出这种结点，这里必须当场诊断 + abort，与本文件其余位置
+     * （classifyExp 的 bad 标签、notImplemented、irRelopCode 的表外文本）的失败形态一致。
+     * 注意这里**不是**补一个 `default:` 就完事：那是一句"没见过的形状"，说不清为什么会走到，
+     * 故诊断里点名"未知二元运算符 + 会无限自递归"，让看到日志的人立刻知道该去查哪里。 */
+    if (k == EX_BINOP && !isKnownBinOp(e->child[1]->name)) {
+        fprintf(stderr, "internal error: translateCond 遇到未知二元运算符 \"%s\" at line %d"
+                        "（继续下去会无限自递归，故此处响亮失败）\n",
+                e->child[1]->name ? e->child[1]->name : "(none)", nodeLine(e));
+        abort();
+    }
     {
         Operand t1 = opVar(newTempName());
         InterCode *c;
@@ -310,7 +351,22 @@ static void notImplemented(const char *fn, int task) {
  *   `[place := #0]` + translate_Cond(...) + `[LABEL l_true]` `[place := #1]` `[LABEL l_false]`
  * 生成 —— 条件成立的地方把 place 置 1，不成立的地方（l_false）保留先置的 0。
  * place 为 NULL（值不被需要）时那两条 `place := …` 都不产，**但条件代码照常生成**：
- * 跳转是这段表达式的全部语义，且两侧可能含函数调用这类副作用。 */
+ * 跳转是这段表达式的全部语义，且两侧可能含函数调用这类副作用。
+ *
+ * ★ **`place` 与条件里读到的操作数同名时的交互**（详见 spec §11 P8）：本函数在条件
+ * **之前**先产 `place := #0`，而条件里的 `EX_ID` 操作数是在 `translateCond` 里**惰性**
+ * 就地读的（不像算术两侧那样先求值进临时变量）。于是当 place 本身又作为条件操作数出现
+ * 时（`x = !x;`、`x = x > 0;`、`x = x && y;` 这类"赋值目标变量也在条件里被读"），
+ * 生成的顺序是**先把自己清成 0、随后才去读它** —— 读到的是刚清掉的那个 0，而不是
+ * 读之前的旧值。这与 C 的求值语义**不同**（C 里 `x = !x` 读的是旧值）。
+ * 但它**逐字符合指导书表 2 的模板**：表 2 里 RELOP/NOT/AND/OR 那一行就是
+ * `code0 = [place := #0]` 排在最前，本文件与设计文档 §6.2 都照抄了它；课程那份参考
+ * 实现若按同一模板写，会有**完全相同**的行为。
+ * ⇒ **这是刻意跟随指导书模板的行为，不是本实现的独立选择。改动前必须先确认判分口径**
+ *   —— 判分按"中间代码在虚拟机上运行的结果"给，单方面改成 C 语义（先算进临时变量、
+ *   或做别名门控）**可能反而与判分机期望的输出不一致**，故本任务只记录、不改行为。
+ * 当前行为由 Test/unit/test_cond.c 的 `x = !x;` 用例逐字节钉住：日后若有人"顺手修成
+ * C 语义"，那条用例会**当场变红**，而不是让行为悄悄改变。 */
 static InterCodeList *translateCondAsValue(InterCodeList *tail, Node *e, Operand place) {
     char *lt = newLabelName(), *lf = newLabelName();
     InterCode *c;

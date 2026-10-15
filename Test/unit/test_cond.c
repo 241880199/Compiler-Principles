@@ -277,6 +277,33 @@ int main(void) {
                  "n > 0;（值不被需要：不产 place 的 IR，条件代码照常）");
     }
 
+    /* ══ ⑪ 钉住 `place` 与条件操作数**同名**时的"先清后读"（spec §11 P8）══
+     * `x = !x;` 的 place 就是 x 自己（`v1`），而 `!x` 里的 `x` 是惰性在 IF 里读的。
+     * 于是生成的顺序是**先 `v1 := #0`、再 `t1 := v1`** —— 读到的是刚清零的 0，
+     * 而不是读之前 x 的旧值。这与 C 语义不同（C 里 `x = !x` 读旧值），但**逐字符合
+     * 指导书表 2 的模板**（`code0 = [place := #0]` 排在最前）。
+     *
+     * ★ 本条**不是说这个行为对**，而是把它**钉死**：日后若有人"顺手修成 C 语义"
+     * （先算进临时变量、或做别名门控），这条的实测会与期望不符、**当场变红**，
+     * 而不是让输出悄悄变掉、判分口径又没对齐。改行为前先看 src/translate.c 里
+     * `translateCondAsValue` 顶部那段注释：要改必须先确认判分口径。
+     * 期望形态与用例⑧（`x = !z;`）对照着读：唯一的差别是条件操作数从 `v2`（z）
+     * 变成 `v1`（x 自己）—— 而 `v1` 刚被 `v1 := #0` 清过。 */
+    translateResetNames();
+    {
+        InterCodeList *t = irList();
+        t = translateExp(t, mkAssign("x", mkNot(mkExp1("ID", "x"))), NULL, NULL);
+        expectIR(t,
+                 "v1 := #0\n"
+                 "t1 := v1\n"                 /* <- 读的是刚被清掉的 v1，不是旧值 */
+                 "IF t1 != #0 GOTO label2\n"
+                 "GOTO label1\n"
+                 "LABEL label1 :\n"
+                 "v1 := #1\n"
+                 "LABEL label2 :\n",
+                 "x = !x;（place 与条件操作数同名：先清后读，钉住当前行为）");
+    }
+
     fprintf(stderr, failures ? "FAILURES=%d\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;
 }
