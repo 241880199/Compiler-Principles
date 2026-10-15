@@ -226,9 +226,24 @@ Test/unit/test_translate_prog: Test/unit/test_translate_prog.c lex.yy.c syntax.t
 	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_translate_prog.c lex.yy.c syntax.tab.c \
 	      src/tree.c src/report.c src/util.c src/translate.c src/ir.c -lfl
 
+# 三条防线（照 scripts/run_tests.sh 的 check_one 写法，不另创一套）：
+#   ① stderr **单独**捕获、非空即判红 —— "正常流程不写 stderr"这条约束此前**没有任何门**
+#      （只有一份末入库的脚本查过 stderr_bytes=0）。要求书要求错误提示走 stdout，
+#      故通过时 stderr 必须为空；万一哪天有诊断漏进 stderr 而 stdout 恰好还对，
+#      这条会当场变红 —— 而不是让约束悄悄失守。
+#   ② 退出码：yyparse 失败返回 2、内部 abort 是 134，非 0 一律判红。不查状态码，
+#      段错误留下的**空产物**会与"正确地什么都不打印"混在一起、只在 diff 处含糊地红。
+#   ③ stdout 与期望逐字节 diff。
+# stdout/stderr 与退出码都在 **bash -c 脚本内部**取（$$ 转义后交给 shell），
+# 绝不把 $? 塞进跨层引号（本项目已三次栽在这上面，其中一次是 make 失败却打印 rc=0）。
 prog-test: Test/unit/test_translate_prog
-	@bash -o pipefail -c './Test/unit/test_translate_prog < Test/unit/lab3_prog_in.cmm | diff -u Test/unit/translate_prog_expected.txt -' \
-	    && echo "PASS translate-prog"
+	@bash -c 'out=$$(mktemp); err=$$(mktemp); \
+	    ./Test/unit/test_translate_prog < Test/unit/lab3_prog_in.cmm >$$out 2>$$err; rc=$$?; \
+	    if [ $$rc -ne 0 ]; then echo "FAIL translate-prog: 退出码 $$rc（yyparse 失败或内部 abort）"; rc=1; fi; \
+	    if [ -s $$err ]; then echo "FAIL translate-prog: stderr 非空（正常流程不得写 stderr）"; sed "s/^/      /" $$err | head -10; rc=1; fi; \
+	    if ! diff -u Test/unit/translate_prog_expected.txt $$out; then echo "FAIL translate-prog: stdout 与期望不符"; rc=1; fi; \
+	    rm -f $$out $$err; \
+	    if [ $$rc -eq 0 ]; then echo "PASS translate-prog"; fi; exit $$rc'
 
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具

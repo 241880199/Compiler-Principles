@@ -54,22 +54,28 @@ static Node *mkExp1(const char *tok, const char *lex) {
  *   `src/translate.c` 的 relopTextOf 也随之删掉了"opText 为空就回退读 lexeme"那条
  *   兼容路 —— 两边同形之后它再无存在理由（留着只会继续藏假绿）。
  *
- * AND/OR 的 lexeme 是 `&&`/`||`：判别与 irRelopCode 都只看 child[1] 的**名字**，
- * 故它们照旧走 newToken（真词法器对它们发的 lexeme 本来就是 NULL —— 见 lexical.l；
- * 这里填上纯粹是为了让结点带上一眼能读懂的操作符文本，不影响任何断言）。 */
+ * ★ 非 RELOP 的运算符终结符（AND/OR/DIV/NOT/ASSIGNOP/LP/RP）一律**发 NULL lexeme**：
+ *   真实词法器（src/lexical.l）对它们发的 lexeme 本来就是 NULL，故这里也照发 NULL，
+ *   让单测的输入与真产物**逐字段同形**。此前它们带着 `&&`/`||`/`/`/`!`/`=`/`(`/`)`
+ *   的文本 —— 惰性上（translate.c 判别与 irRelopCode 都只读 `->name`）今天无害，
+ *   可这正是**藏住那条 RELOP Critical 的同一个病**：判据测的是我们手工拼的形状、
+ *   而非真实产物会走的形状，一旦哪天有人改读 lexeme 就在"真实产物不会走的路"上绿着。
+ *   RELOP 那条路已由 newRelop 按构造堵死（见上），这里把其余 token 一并归零。
+ *   `lex` 参数只对 RELOP 有意义（它就是 opText）。 */
 static Node *mkBin(Node *l, const char *tok, const char *lex, Node *r) {
-    Node *op = strcmp(tok, "RELOP") == 0 ? newRelop(lex, 1) : newToken(tok, 1, lex);
+    Node *op = strcmp(tok, "RELOP") == 0 ? newRelop(lex, 1) : newToken(tok, 1, NULL);
     return newNode("Exp", 3, l, op, r);
 }
 
-/* `!inner`：二孩子 Exp，child[0] 是 NOT 终结符。 */
+/* `!inner`：二孩子 Exp，child[0] 是 NOT 终结符（lexeme 发 NULL，与真词法器同形）。 */
 static Node *mkNot(Node *inner) {
-    return newNode("Exp", 2, newToken("NOT", 1, "!"), inner);
+    return newNode("Exp", 2, newToken("NOT", 1, NULL), inner);
 }
 
-/* 构造 `ID = Exp`（三孩子），用于测"条件/逻辑非**作为值**"那几条。 */
+/* 构造 `ID = Exp`（三孩子），用于测"条件/逻辑非**作为值**"那几条。
+ * ASSIGNOP 的 lexeme 发 NULL —— 与真词法器同形（见文件头那段说明）。 */
 static Node *mkAssign(const char *name, Node *rhs) {
-    return newNode("Exp", 3, mkExp1("ID", name), newToken("ASSIGNOP", 1, "="), rhs);
+    return newNode("Exp", 3, mkExp1("ID", name), newToken("ASSIGNOP", 1, NULL), rhs);
 }
 
 /* Task 10 的语句骨架里的一项是 `[LABEL l]`。translate.c 里同名的是 static，故这里
@@ -180,7 +186,7 @@ int main(void) {
      * 那一支 —— 这是指导书表 4 的"其它"分支，不是短路本身的开销。 */
     translateResetNames();
     {
-        Node *cond = mkBin(mkExp1("ID", "a"), "AND", "&&", mkExp1("ID", "b"));
+        Node *cond = mkBin(mkExp1("ID", "a"), "AND", NULL, mkExp1("ID", "b"));
         char *lt = newLabelName(), *lf = newLabelName();
         InterCodeList *t = irList();
         t = translateCond(t, cond, lt, lf);
@@ -198,7 +204,7 @@ int main(void) {
     /* ══ ⑥ OR 的**真短路**：Exp1 为真直接跳 lt，落不到 label3 ══ */
     translateResetNames();
     {
-        Node *cond = mkBin(mkExp1("ID", "a"), "OR", "||", mkExp1("ID", "b"));
+        Node *cond = mkBin(mkExp1("ID", "a"), "OR", NULL, mkExp1("ID", "b"));
         char *lt = newLabelName(), *lf = newLabelName();
         InterCodeList *t = irList();
         t = translateCond(t, cond, lt, lf);
@@ -220,10 +226,10 @@ int main(void) {
      * `LABEL label3` **之前**）会出现在 z 为假也要走的路径上 —— 本条立刻变红。 */
     translateResetNames();
     {
-        Node *div = newNode("Exp", 3, newToken("LP", 1, "("),
-                            mkBin(mkExp1("ID", "b"), "DIV", "/", mkExp1("ID", "z")),
-                            newToken("RP", 1, ")"));
-        Node *cond = mkBin(mkExp1("ID", "z"), "AND", "&&", div);
+        Node *div = newNode("Exp", 3, newToken("LP", 1, NULL),
+                            mkBin(mkExp1("ID", "b"), "DIV", NULL, mkExp1("ID", "z")),
+                            newToken("RP", 1, NULL));
+        Node *cond = mkBin(mkExp1("ID", "z"), "AND", NULL, div);
         char *lt = newLabelName(), *lf = newLabelName();
         InterCodeList *t = irList();
         t = translateCond(t, cond, lt, lf);

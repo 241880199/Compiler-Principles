@@ -26,21 +26,25 @@ LABEL label6 :
 t7 := v3
 RETURN t7
 FUNCTION main :
+v6 := #4
+t8 := v4
+t9 := #1
+v7 := t8 + t9
 v4 := #1
 v5 := #2
-t8 := v4
-t9 := v5
-v6 := t8 + t9
-t10 := v6
-t11 := #2
-v4 := t10 * t11
-t12 := v4
-IF t12 != #0 GOTO label8
+t10 := v4
+t11 := v5
+v8 := t10 + t11
+t12 := v8
+t13 := #2
+v4 := t12 * t13
+t14 := v4
+IF t14 != #0 GOTO label8
 GOTO label7
 LABEL label7 :
-t13 := v4
-t14 := v5
-v4 := t13 - t14
+t15 := v4
+t16 := v5
+v4 := t15 - t16
 LABEL label8 :
-t15 := #0
-RETURN t15
+t17 := #0
+RETURN t17
