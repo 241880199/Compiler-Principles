@@ -1,0 +1,12 @@
+FUNCTION main :
+DEC a 8
+t1 := #5
+t2 := &a + #4
+*t2 := t1
+x := CALL f
+IF x > #0 GOTO label1
+GOTO label2
+LABEL label1 :
+RETURN #0
+LABEL label2 :
+FUNCTION f :
