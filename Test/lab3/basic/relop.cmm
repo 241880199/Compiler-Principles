@@ -1,0 +1,15 @@
+int main()
+{
+    int a;
+    int b;
+    a = 3;
+    b = 5;
+    if (a < b) write(1); else write(0);
+    if (a <= b) write(1); else write(0);
+    if (a > b) write(1); else write(0);
+    if (a >= b) write(1); else write(0);
+    if (a == b) write(1); else write(0);
+    if (a != b) write(1); else write(0);
+    if (a + 2 == b) write(1); else write(0);
+    return 0;
+}

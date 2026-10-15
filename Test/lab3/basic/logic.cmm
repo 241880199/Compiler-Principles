@@ -1,0 +1,17 @@
+int main()
+{
+    int z;
+    int b;
+    z = 0;
+    b = 5;
+    if (z && (b / z)) write(1); else write(0);
+    if (b && (b / b)) write(1); else write(0);
+    if (1 || (b / z)) write(1); else write(0);
+    if (0 || (b / b)) write(1); else write(0);
+    if (!z) write(1); else write(0);
+    if (!b) write(1); else write(0);
+    if (z || 0) write(1); else write(0);
+    if (!(z || b)) write(1); else write(0);
+    if (b > 0 && b < 10) write(1); else write(0);
+    return 0;
+}

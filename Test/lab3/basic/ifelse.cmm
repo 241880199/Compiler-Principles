@@ -1,0 +1,23 @@
+int main()
+{
+    int a;
+    int b;
+    a = 1;
+    b = 0;
+    if (a)
+        if (b) write(10); else write(11);
+    else
+        write(12);
+    a = 0;
+    if (a)
+        if (b) write(20); else write(21);
+    else
+        write(22);
+    a = 2;
+    if (a > 0) {
+        if (a > 1) write(31); else write(32);
+    } else {
+        write(33);
+    }
+    return 0;
+}

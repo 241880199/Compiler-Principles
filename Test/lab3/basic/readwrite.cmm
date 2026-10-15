@@ -1,0 +1,15 @@
+int main()
+{
+    int a;
+    int b;
+    int c;
+    a = read();
+    b = read();
+    c = read();
+    write(a);
+    write(b);
+    write(c);
+    write(a + b + c);
+    write(a * b - c);
+    return 0;
+}

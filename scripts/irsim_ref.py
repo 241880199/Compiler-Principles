@@ -10,6 +10,7 @@
 测试 `test_int_parse_failure_leaks_valueerror` 专门钉住这条行为。
 """
 
+import re
 import sys
 
 RELOPS = (">", "<", ">=", "<=", "==", "!=")
@@ -351,3 +352,41 @@ def run(path, inputs=(), trace=False):
     _execute(st, trace)
     st.result.instr_cnt = st.instr_cnt
     return st.result
+
+
+# ============================================================================
+#  命令行入口（供测试台调用）
+# ============================================================================
+
+def _read_inputs(path):
+    """从 .in 读入 READ 用的整数序列：逗号/空白分隔，允许负号（与垫片一致）。"""
+    with open(path, "r") as fp:
+        text = fp.read()
+    return [int(tok) for tok in re.findall(r"-?\d+", text)]
+
+
+def _cli(argv):
+    """`--run <ir> [--in <infile>]`：第一行 instr_cnt，其后每行一个 WRITE 值。
+
+    非正常结束（memory/pc）时写 stderr 并以退出码 3 报红，便于运行台区分
+    "IR 执行异常" 与 "结果不符"。
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description="irsim 无头参考机的命令行入口")
+    ap.add_argument("--run", required=True, metavar="IR", help="要执行的 .ir 文件")
+    ap.add_argument("--in", dest="infile", default=None, metavar="IN",
+                    help="READ 的输入文件（逗号/空白分隔的整数）")
+    args = ap.parse_args(argv)
+    inputs = _read_inputs(args.infile) if args.infile else []
+    r = run(args.run, inputs)
+    sys.stdout.write("%d\n" % r.instr_cnt)
+    for v in r.outputs:
+        sys.stdout.write("%d\n" % v)
+    if r.status != "ok":
+        sys.stderr.write("irsim_ref: 非正常结束，status=%s\n" % r.status)
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))
