@@ -140,7 +140,7 @@ lexical: $(LFILE)                              # 只跑 flex，从不编译产�
 | 形式 | 约束 | 运行语义 |
 |---|---|---|
 | `LABEL x :` | `len==3` 且 `strs[2]==":"`；`x=="main"` 报错 | 无操作 |
-| `FUNCTION f :` | 同上；`f=="main"` 时 `entranceIP = 本行号` | 无操作（**但会执行并计数**） |
+| `FUNCTION f :` | 同上；`f=="main"` 时 `entranceIP` = **该行在 `codes` 里的下标**（真机 `lineno` 只对非空白行自增，故它**就是** codes 下标，不是物理行号 —— 空白行会让两者错开） |
 | `GOTO x` | `len==2` | `ip = labelTable[x]` |
 | `RETURN x` | `len==2` | 见 §3.4 |
 | `READ x` | `len==2` 且 `x[0].isalpha()` | `mem[symTable[x][0]//4] = 读入值` |
