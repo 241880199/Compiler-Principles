@@ -124,9 +124,21 @@ def sanity_check(p, line, lineno):
         _table_insert(p, strs[1])
         _table_insert(p, strs[3])
         p.codes.append(("IF", strs[1], strs[2], strs[3], strs[5]))
-    elif len(strs) >= 3 and strs[1] == ":=":
-        if strs[0][0] in "&#":
-            raise IRSyntaxError(line)
+    elif strs[1] != ":=" or len(strs) < 3:
+        # ★ 与真机**同序**取值（这是"不得比真机宽容"的一处收口）：
+        #   反汇编 294 行 = `strs[1] != ":=" or len(strs) < 3`，字节码先
+        #   `LOAD strs; LOAD 1; BINARY_SUBSCR`（取 strs[1]）**再** `len(strs) < 3`。
+        #   故 1-token 行（如 `a:=b` 分词后 = ['a:=b']）在这里**当场 IndexError**；
+        #   真机 sanity_check 只捕 (IRSyntaxError, ValueError)，IndexError 原样穿出。
+        #   写成 `len(strs) >= 3 and strs[1] == ":="` 会把这次越界访问**短路掉**，
+        #   于是本该 IndexError 的输入被我们报成干净的 IRSyntaxError —— 偏离真机。
+        raise IRSyntaxError(line)
+    elif strs[0][0] in "&#":
+        # 反汇编 296 行：`strs[0][0] == '&' or strs[0][0] == '#'`（访问 strs[0][0]，安全：
+        # strs[0] 在上面的 elif 链里已被反复取用）。到此处必有 len(strs) >= 3。
+        raise IRSyntaxError(line)
+    else:
+        # 反汇编 298 行起 = `:=` 分支主体：先 tableInsert(strs[0])，再分派 CALL/MOV/ARITH。
         _table_insert(p, strs[0])
         if strs[2] == "CALL":
             if len(strs) != 4:
@@ -142,8 +154,6 @@ def sanity_check(p, line, lineno):
             p.codes.append(("ARITH", strs[0], strs[2], op, strs[4]))
         else:
             raise IRSyntaxError(line)
-    else:
-        raise IRSyntaxError(line)
 
 
 def label_check(p):

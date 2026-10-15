@@ -281,9 +281,13 @@ def compare_parse(name, dirname):
         if r_codes != o.get("codes"):
             diffs.append("codes 不同：参考机=%r 原版=%r" % (r_codes, o.get("codes")))
     elif o_exc and o_exc["type"] not in ("LoadError",):
-        # 原版**没**把异常拦在 loadFile 里（dialog 路径），而是原样穿出 ⇒ 真差异
-        diffs.append("原版拒绝方式不是 loadFile 内的对话框：原版=%s 参考机=%s"
-                     % (o_exc, r_exc))
+        # 原版**没**把异常拦在 loadFile 里（dialog 路径），而是原样穿出。
+        # 按"参考机不得比原版宽容"：真机泄漏的异常，参考机也要泄漏**同一类**
+        # （如 `a:=b` 这类 1-token 行两边都穿出 IndexError）⇒ 那才是"一致"。
+        # 只有当参考机没泄漏、或泄漏的类型/参数与真机不同，才算差异。
+        if r_exc != o_exc:
+            diffs.append("原版拒绝方式不是 loadFile 内的对话框：原版=%s 参考机=%s"
+                         % (o_exc, r_exc))
     return diffs, {"ref_ok": r_ok, "ref_exc": r_exc, "orig_ok": o_ok, "orig_exc": o_exc}
 
 

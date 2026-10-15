@@ -60,14 +60,40 @@ def test_div_becomes_floordiv():
     p = load_ir(os.path.join(HERE, "t2.ir"))   # 内容：FUNCTION main : / t := a / b
     assert p.codes[1] == ("ARITH", "t", "a", "//", "b")
 
-def test_rejects_single_token_line():
-    """`a:=b` 分词后只有 **1 个** token ⇒ 走的是 sanity_check 末尾的兜底 else。
+def test_single_token_line_leaks_indexerror():
+    """`a:=b` 分词后只有 **1 个** token ⇒ 真机在此**当场 IndexError**，不是干净的 IRSyntaxError。
 
-    ⚠️ 它**不**覆盖 `strs[1] == ":="` 那个分支 —— 把整个 `:=` 分支删掉这个用例照样通过。
-    真正走 `:=` 分支并在其中失败的用例见 test_rejects_arith_with_bad_operator /
-    test_rejects_hash_on_assignment_lhs / test_rejects_call_with_extra_operand。
+    ★ 与真机同序取值（反汇编 `build/irsim_dis.txt` 的 `sanity_check` 第 294 行、
+      偏移 716–742）：赋值分支的条件是 `elif strs[1] != ":=" or len(strs) < 3:`，
+      字节码先 `LOAD strs; LOAD 1; BINARY_SUBSCR`（取 `strs[1]`）**再**比 `len(strs) < 3`。
+      ⇒ 1 元素列表上取下标 1 → **IndexError**。真机 `sanity_check` 只捕
+      `(IRSyntaxError, ValueError, DuplicatedLabelError, DuplicatedVariableError,
+        CurrentFunctionNoneError)` ⇒ IndexError **原样穿出 `loadFile`**（连对话框都不弹）。
+
+    ⚠️ 若把参考机写成 `len(strs) >= 3 and strs[1] == ":="`（短路），这次越界访问被挡住，
+    就会报成干净的 IRSyntaxError —— 那就**比真机宽容**。本用例正是钉住这一点：
+    把 `load_ir` 那一分支改回带短路的写法，本用例立刻变红（见任务报告的变异自证）。
     """
-    _must_reject("t3.ir")   # 内容：FUNCTION main : / a:=b
+    try:
+        _ir("t3.ir")   # 内容：FUNCTION main : / a:=b
+    except IRSyntaxError as e:
+        raise AssertionError(
+            "t3.ir 应当漏出 IndexError（与真机一致），却抛了 IRSyntaxError: %r" % e)
+    except IndexError:
+        return
+    raise AssertionError("t3.ir 应当抛 IndexError，但没有抛任何异常")
+
+
+def test_token_sufficient_but_wrong_shape_is_still_syntax_error():
+    """反例（与上一条成对）：token 数够、但形状不对的，仍是干净的 `IRSyntaxError`。
+
+    证明"没有把所有语法错误都变成 IndexError"。`a b c` 分词后 3 个 token，
+    `strs[1] == 'b' != ':='` ⇒ 走 `sanity_check` 的 `raise IRSyntaxError`，
+    而非越界取值。同类反例还有 `if_bad_goto.ir`（`IF x > y z GOTO`：6 个 token，
+    但 `strs[4] != 'GOTO'`）—— 见 test_rejects_if_without_goto_at_position_four。
+    """
+    e = _must_reject("not_assign.ir")   # 内容：FUNCTION main : / a b c
+    assert isinstance(e, IRSyntaxError)
 
 def test_blank_lines_are_skipped_without_index():
     p = load_ir(os.path.join(HERE, "t4.ir"))   # 第 2 行是空行

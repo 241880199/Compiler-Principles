@@ -33,11 +33,12 @@
 逐条比 `codes` / `symTable` / `functionDict` / `labelTable` / `entranceIP` /
 `outputs` / **`instr_cnt`** / 结束状态 / 异常。
 
-**实测总账（48 条比对）：一致 47，不一致 1。** 首轮对拍曾得 **一致 29 / 不一致 19**：
+**实测总账（48 条比对）：一致 48，不一致 0。** 首轮对拍曾得 **一致 29 / 不一致 19**：
 19 条里 **17 条是同一个根因**（`instrCnt` 计数口径，§2-6）、1 条是 `READ` 取消（§2-10）、
-1 条是 `t3.ir` 的异常类型（§2-9）。**前两类都已按真机语义修正**（见 §2-6、§2-10），
-故现在只剩 `t3.ir` 一条 —— 那是装载期**拒绝机制**的差异（两侧都拒绝，只是抛的异常类型不同），
-与计数 / 输出值 / 结束状态**无关**。**没有任何一条是"输出值"或"结束状态"不一致。**
+1 条是 `t3.ir` 的异常类型（§2-9）。**三类都已按真机语义修正**（见 §2-6、§2-9、§2-10），
+现 **48 条全部一致**。t3.ir 那条（1-token 行 `a:=b`）原先参考机抛干净的 `IRSyntaxError`、
+真机抛 `IndexError` —— 那是参考机**比真机宽容**，已按真机**同序取值**修正（§2-9、§2-11）。
+**没有任何一条不一致出现在"输出值"或"结束状态"上。**
 原始输出见 `build/compare_out.txt`（`python scripts/compare_refsim.py` 可复现）。
 
 ---
@@ -231,9 +232,9 @@ FINAL instrCnt=15
 - `rec.ir` 用 `<=`：两边都得 120。
 - 原版实现是 `eval(str(v1) + code[2] + str(v2))`，参考机是显式 `_eval_relop` —— **对整数语义无差**。
 
-### 2.9 `GOTO`/`IF`/`CALL` 之外形态的装载期校验 —— **已由原版验证一致（一处例外）**
+### 2.9 `GOTO`/`IF`/`CALL` 之外形态的装载期校验 —— **已由原版验证一致**
 
-`unit_parse/` 的 20 个正/反例**全部接受/拒绝一致**：
+对拍里 `unit_parse/` 的 20 个正/反例（= `compare_refsim.py` 的 `PARSE_CASES`）**全部接受/拒绝一致**：
 
 | 夹具 | 参考机 | 原版 | 判词 |
 |---|---|---|---|
@@ -246,24 +247,28 @@ FINAL instrCnt=15
 | `label_main.ir`（`LABEL main :`） | 拒绝 | 拒绝 | 一致 |
 | 定向 `badrelop.ir`（`IF a <> b GOTO l`，RELOPS 白名单） | 拒绝 | 拒绝 | 一致 |
 | `dec_nonnum.ir`（`DEC a abc`） | 拒绝（漏 `ValueError`） | 拒绝（弹 "Syntax error at line 2"） | 一致 |
-| `arg_imm.ir`/`write_imm.ir`/`read_var.ir`/`param_var.ir`/`dec_ok.ir`/`t1`–`t4.ir` | 接受 | 接受 | 一致 |
+| `arg_imm.ir`/`write_imm.ir`/`read_var.ir`/`param_var.ir`/`dec_ok.ir`/`t1`/`t2`/`t4.ir` | 接受 | 接受 | 一致 |
 
 **拒绝的「机制」天然不同、但不构成语义不一致**：参考机是库，把异常抛给调用方；
 原版是 GUI，在 `loadFile` 边界上弹 `QMessageBox.critical` 再 `initialize()`。
 两侧对"这份 IR 不被接受"的**结论**一致。
 
-**唯一例外 —— `t3.ir`（单 token 行 `a:=b`）**：
+**`t3.ir`（单 token 行 `a:=b`）—— ★ 已对齐**：
 
 | | 结果 |
 |---|---|
-| 参考机 | `IRSyntaxError('a:=b\n')` |
-| 原版 | **`IndexError('list index out of range')`** |
+| 参考机（改前） | `IRSyntaxError('a:=b\n')` —— **比真机宽容** |
+| 参考机（改后） | **`IndexError('list index out of range')`** |
+| 原版（真机） | **`IndexError('list index out of range')`** |
 
-根因：`sanity_check` 兜底分支先取 `strs[1]`（`len(strs)==1` ⇒ 越界），而它**不在**
-`loadFile` 捕的 `(IRSyntaxError, ValueError, DuplicatedLabelError, DuplicatedVariableError,
-CurrentFunctionNoneError)` 名单里 ⇒ **原样穿出 `loadFile`**（连对话框都不弹）。
-⇒ 判据（"拒绝"）一致；**参考机在这一点上比原版干净**，且对我们**无实害**（我们不会
-生成这种 IR）。记录在此只是为了"一条都没美化"。
+根因与修正：真机 `sanity_check` 的赋值分支**先取 `strs[1]`**（反汇编行 294、偏移 716–742：
+`LOAD strs; LOAD 1; BINARY_SUBSCR` 紧接 `len(strs) < 3`），1 元素列表取下标 1 ⇒ 当场
+`IndexError`；它**不在** `loadFile` 捕的 `(IRSyntaxError, ValueError, DuplicatedLabelError,
+DuplicatedVariableError, CurrentFunctionNoneError)` 名单里 ⇒ **原样穿出 `loadFile`**（连对话框
+都不弹）。改前参考机写成 `len(strs) >= 3 and strs[1] == ":="`，**短路**掉了这次越界访问，
+报成干净的 `IRSyntaxError` ⇒ 比真机宽容。现按真机**同序取值**重写（详见 §2.11）。
+反例 `not_assign.ir`（`a b c`，token 数够但 `strs[1] != ':='`）仍抛 `IRSyntaxError` ——
+证明未"一刀切把所有语法错误变成 IndexError"。
 
 ### 2.10 `READ` 弹窗被取消时**不写内存** —— ★ **已修正：与原版一致**
 
@@ -303,15 +308,73 @@ if st.inputs:                                # ★ 输入耗尽 = 取消 ⇒ 不
 **对本实验的实际影响：低。** 我们生成的 IR 里每个被 `READ` 的变量只读一次、且读前未赋值；
 判分机在批处理下也不会"取消"。但作为一条真机行为，现已如实对齐。
 
+### 2.11 装载器异常对齐：`sanity_check` / `tableInsert` / `loadFile` 的取值顺序审计 —— ★ `t3.ir` 已对齐
+
+**本节的增量**：把真机 `sanity_check` / `tableInsert` / `loadFile` 的**取值顺序**与参考机
+`irsim_ref.py` 里对应函数**逐条对照**，专找"我们加了长度/类型防护、而真机没有 ⇒ 真机会抛、
+我们不会"这一类（即"参考机比真机宽容"）。依据 = `build/irsim_dis.txt`（原版 `irsim.pyc`
+的反汇编全文，本族的"真机到底怎么走"的权威）。
+
+**结论：同一族的可观察偏离恰好 1 处，已改齐。**
+
+| # | 位置 | 真机（反汇编依据） | 参考机（改前） | 判定 |
+|---|---|---|---|---|
+| 1 | `sanity_check` 赋值分支的条件顺序 | 行 294、偏移 716–742：`elif strs[1] != ":=" or len(strs) < 3:`，字节码**先 `LOAD strs; LOAD 1; BINARY_SUBSCR`（取 `strs[1]`）再**比 `len(strs) < 3` | `elif len(strs) >= 3 and strs[1] == ":=":`，**先比长度**，把这次 `strs[1]` 访问**短路**掉 | **改**（参考机更宽容） |
+
+**改动**（`scripts/irsim_ref.py::sanity_check`）：把该分支**按真机的取值顺序**重写为
+`elif strs[1] != ":=" or len(strs) < 3: raise IRSyntaxError`，再接
+`elif strs[0][0] in "&#": raise` 与 `else:`（`:=` 分支主体，起手 `tableInsert(strs[0])`）。
+这**不是**"特判后手动 `raise IndexError`"，而是让 `strs[1]` 的越界访问**自然发生** —— 与真机同构。
+
+**效果**：1-token 行 `a:=b`（`t3.ir`）现在**两侧都漏 `IndexError('list index out of range')`**
+（真机 `sanity_check` 只捕 `(IRSyntaxError, ValueError, DuplicatedLabelError,
+DuplicatedVariableError, CurrentFunctionNoneError)`，IndexError 原样穿出 `loadFile`）。
+反例 `not_assign.ir`（`a b c`，token 数够但 `strs[1] != ':='`）仍抛干净的 `IRSyntaxError`。
+（原版实测：`not_assign.ir` → 弹 `"Syntax error at line 2:\n\na b c\n"`，`Loading failed.`。）
+
+> **比对器配套修正**：`compare_refsim.py::compare_parse` 原先把"原版拒绝不是 `loadFile` 内的
+> 对话框（即原样漏出别的异常）"一律记为**不一致** —— 那是在参考机**比真机宽容**时写下的规则。
+> 按"参考机不得比真机宽容"，正确判据应是"两侧漏出**同一类**异常即一致"。已把它改成
+> `if r_exc != o_exc:`（仅当参考机没漏、或漏的类型/参数与真机不同才判不一致）。
+
+**同族审计的其余逐条结论（均为"报告不改"）**：
+
+- **`tableInsert`（行 351–368）vs 参考机 `_table_insert`**：
+  - 参考机多一句 `if p.current_function is None: raise IRSyntaxError(...)`；真机**没有**这句
+    （它在 `sanity_check` 行 267 先 `raise CurrentFunctionNoneError`，故进 `tableInsert` 时
+    `currentFunction` 必非 None）。⇒ 该守卫**不可达**，无行为差异。
+  - 参考机用 `funcs.setdefault(current_function, []).append(var)`；真机用
+    `self.functionDict[self.currentFunction].append(var)`（**直接下标** ⇒ 若 name 不在
+    `functionDict` 会 `KeyError`）。真机里 `currentFunction` 与 `functionDict` 在 `sanity_check`
+    行 263–264 **同步**设置，故该 `KeyError` **不可达**。⇒ 无行为差异。
+  - 这两处**形状上**确属"真机会抛、我们不会"，但都**不可达**（`sanity_check` 已先拦）。
+    故**不改**：改了也测不到，且超出"同一族可观察偏离"的范围。
+- **`sanity_check` 的"行不属于任何函数"**：真机 `raise CurrentFunctionNoneError`（行 268），
+  被 `sanity_check` 自己的 `except` 捕住 → 弹框、返回 `False`；参考机 `raise IRSyntaxError`。
+  两侧**结论一致**（都拒绝），仅异常类型不同。**不改**（非同一族：两侧都抛，不涉及宽容度）。
+  定向 `no_func.ir`（`RETURN #0` 出现在任何 `FUNCTION` 前）实测：真机弹
+  `"Line 1 does not belong to any function"` 并 `Loading failed.`；参考机抛
+  `IRSyntaxError('line 0 does not belong to any function')`。
+- **`loadFile`（行 108–135）**：真机 `lineno` **只在 `sanity_check` 返回真值时 +1**（行 114–118），
+  参考机用 `len(p.codes)`——每个成功的 `sanity_check` 恰好追加一条 code ⇒ 两者**恒等**；
+  `line.isspace()` 整行跳过、`open(fname, 'r')`、结尾 `entranceIP`/`labelCheck`/`offset>1MiB`
+  的判定次序，与参考机 `load_ir` 的 `entry / label_check / offset` 检查**逐条对应**。**无偏离**。
+
+**仍未证（本节的诚实边界）**：
+- 只证了**走过的那些形状**：`t3.ir`（1-token 行）+ `not_assign.ir`（3-token 非赋值）。
+  `strs` 长度为 **0**、含**制表符/多空白**、或 `#`/`&` 落在赋值 LHS 之外的组合，
+  **未逐一在原版上跑过** —— 它们走同一段字节码，理论上同构，但**没有独立实测**。
+- `tableInsert` 那两处"不可达偏离"是按**控制流论证**不可达，**非实测**（没有构造出能让真机
+  在此 `KeyError` 的 IR；若哪天真构造出来，就说明该论证有误）。
+
 ---
 
 ## 3. 结论
 
 1. **原版对拍做成了**：`scripts/irsim_orig_probe.py`（跑在仓内 `build/py38/` 的 CPython 3.8 +
    PyQt5 上，无界面、屏蔽全部模态框）+ `scripts/compare_refsim.py`（逐条比对）。
-   首轮 48 条：**一致 29、不一致 19**；**按真机语义修正参考机后，48 条：一致 47、不一致 1**
-   （唯一残留 = `t3.ir` 的装载期异常类型，§2-9）。原始输出 `build/compare_out.txt`，
-   一条命令可复现。
+   首轮 48 条：**一致 29、不一致 19**；**按真机语义修正参考机后，48 条：一致 48、不一致 0**。
+   原始输出 `build/compare_out.txt`，一条命令可复现。
 2. **旧版 §2 的九类"无独立证据"语义，八类被原版验证一致**（`DEC` 计数、解引用全部形态与
    两条 `KeyError` 陷阱、整除与除零、`labelCheck`、内存模型与三档越界、`status=='pc'`、
    `>=/<=/!=`、装载期全部形状校验）。
@@ -320,9 +383,12 @@ if st.inputs:                                # ★ 输入耗尽 = 取消 ⇒ 不
    参考机原实现多计；现已把 `GOTO` / `IF`（成立）/ `CALL` 的下一站改成 `labelTable[...] + 1`
    （`RETURN` 本就不加、非跳转不变），**修正后与原版逐条一致**。
 4. **另一条真不一致也已修正**：`READ` 弹窗被取消（输入耗尽）时**不写内存**（§2-10）。
-5. **没有任何一条不一致出现在"输出值"或"结束状态"上**。首轮唯一的 outputs 差异（§2-10 输入取消）
-   已修正；唯一残留的 §2-9 `t3.ir` 是**拒绝机制**差异（两侧都拒绝，只是抛的异常类型不同）。
-   **执行内核的可观察行为与原版一致。**
-6. 因此：参考机作为**正确性判据**（哪些 IR 跑出什么输出、抛不抛异常、判不判内存越界）
+5. **第三处也已对齐（本节新增）：`t3.ir` 的装载期异常类型** —— 参考机原比真机宽容（把真机
+   会当场漏出的 `IndexError` 报成干净的 `IRSyntaxError`）。已按真机**同序取值**改齐（§2-9、§2-11），
+   并做了 `sanity_check`/`tableInsert`/`loadFile` 三函数的**同族审计**（§2-11）：同族可观察偏离
+   **仅此 1 处**，另有 3 处"真机会抛、我们不会"的**不可达**形状与 1 处异常类型差异，均**报告不改**。
+6. **没有任何一条不一致出现在"输出值"或"结束状态"上**。**执行内核的可观察行为与原版一致**，
+   装载期异常行为现也与真机**同构**（含"该漏 `IndexError` 就漏 `IndexError`"）。
+7. 因此：参考机作为**正确性判据**（哪些 IR 跑出什么输出、抛不抛异常、判不判内存越界）
    可以放心用；作为**效率判据**时，其绝对 `instr_cnt` **现在就是**判分机的绝对指令数，
    不必再换算。
