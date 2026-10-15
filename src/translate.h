@@ -45,6 +45,17 @@ InterCodeList *translateProgram(Node *root);
  * 本任务一律置 0，为 Task 11 预留。 */
 InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *placeIsAddr);
 
+/* ── 条件翻译（Task 9）────────────────────────────────────────────────────
+ * 按指导书表 4 的**短路**形式生成代码：条件成立跳 labelTrue，否则跳 labelFalse。
+ * labelTrue / labelFalse 是**继承属性**（函数参数），**不做回填** —— 见 §6.3 与
+ * translate.c 里 translateCond 顶部那段理由。
+ *
+ * 调用方负责在合适的时机摆好两个目标标号（语句翻译见 Task 10）；本函数只保证
+ * "条件为真时控制流落在 labelTrue 上、为假时落在 labelFalse 上"，不生成标号本身。
+ * 返回新增 IR 挂在传入 tail 之后的新尾。 */
+InterCodeList *translateCond(InterCodeList *tail, Node *e,
+                             const char *labelTrue, const char *labelFalse);
+
 /* ── 名字发生器 ───────────────────────────────────────────────────────────
  * 变量与临时变量**共用编号空间**，避免临时变量与源码变量同名。
  * 声明落在 Task 7、实现落在 Task 8。 */

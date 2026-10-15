@@ -21,6 +21,7 @@ Test/unit/test_ir
 Test/unit/test_ir_abort
 Test/unit/test_expkind
 Test/unit/test_translate
+Test/unit/test_cond
 Test/regress/driver
 
 # ── 编辑器 / 系统 ─────────────────────────────────────────────

@@ -1,0 +1,5 @@
+IF v1 > #0 GOTO label1
+GOTO label2
+LABEL label1 :
+WRITE #1
+LABEL label2 :

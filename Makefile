@@ -177,6 +177,23 @@ translate-test: Test/unit/test_translate
 	@bash -o pipefail -c './Test/unit/test_translate | diff -u Test/unit/translate_exp_expected.txt -' \
 	    && echo "PASS translate-exp"
 
+# 条件翻译单测（Task 9）：stdout 逐字节钉住 `if (n > 0) write(1);` 的产物 ——
+# 条件两侧都是"简单操作数"（ID 与 INT）时**直接内联进 IF**，只有**一条** IF 指令，
+# 而不是先落 `t1 := #0` 再 `IF v1 > t1 GOTO …` 两条。这正是设计文档 §6.1 表里
+# `if (n > 0) …` 那行"省 1 条指令"的落地（要求书 4.1.6 样例 1 的"优化后版本"同形态）。
+# 两种写法跑出来的程序结果完全相同，端到端一个字都察觉不到 —— 只能靠逐字节比对钉。
+# 其余用例（六个 relop 的映射、NOT 的目标互换、AND/OR 短路、条件作值、place 为空）
+# 写 stderr、以退出码为判据（`-o pipefail` 让非 0 退出码同样判红），**不往 stdout
+# 写一个字节**。链接行与 translate-test 一致：translate.c 只用 ir/tree/util 的符号
+# （symtab.h/type.h 只是 include，没有调用），故**不需要**链 src/symtab.c、src/type.c。
+Test/unit/test_cond: Test/unit/test_cond.c src/translate.c src/translate.h \
+                     src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_cond.c src/translate.c src/tree.c src/util.c src/ir.c
+
+cond-test: Test/unit/test_cond
+	@bash -o pipefail -c './Test/unit/test_cond | diff -u Test/unit/cond_expected.txt -' \
+	    && echo "PASS cond"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -188,11 +205,11 @@ translate-test: Test/unit/test_translate
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test expkind-test translate-test
+        ir-abort-test expkind-test translate-test cond-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
 	      Test/unit/test_ir Test/unit/test_ir_abort Test/unit/test_expkind \
-	      Test/unit/test_translate \
+	      Test/unit/test_translate Test/unit/test_cond \
 	      Test/regress/driver Test/regress/*.o

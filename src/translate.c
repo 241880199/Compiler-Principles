@@ -13,8 +13,11 @@
  *   Exp1 op Exp2     -> t1 := Exp1; t2 := Exp2; place := t1 op t2   （op 是 + - * /）
  *   -Exp1            -> t1 := Exp1; place := #0 - t1
  *   (Exp1)           -> translateExp(Exp1, place)      （括号不产生任何 IR）
- *   Exp 关系/与/或   -> 走条件翻译 translateCondAsValue（Task 9）
- *   !Exp             -> translateNotAsValue（Task 9）
+ *   Exp 关系/与/或   -> translateCondAsValue：`[place := #0]` + 条件翻译 + `place := #1`
+ *   !Exp             -> translateNotAsValue（同上；NOT 的特别之处在 translateCond 的
+ *                       目标互换那一行，两条路径共用同一个实现）
+ *   条件本体         -> translateCond(tail, e, label_true, label_false)：**短路**，
+ *                       两个跳转目标是**继承属性**（函数参数），不做回填（Task 9）
  *   read()           -> translateCall0（Task 10）
  *   f()              -> translateCall0（Task 10）
  *   f(Args)          -> translateCallN（Task 10）
@@ -173,29 +176,158 @@ void translateResetNames(void) {
     tmpSeq = labelSeq = varSeq = varMapN = 0;
 }
 
+/* ══ 条件翻译（Task 9）══════════════════════════════════════════════════════
+ *
+ * ★ **为什么不做回填**：指导书 4.2.6 把 label_true/label_false 举成"回填"的典型用途，
+ * 那是针对把它们当**综合属性**处理的写法 —— 生成跳转时还不知道目标，于是留下一串
+ * "待填链"（跳转指令上挂着未定目标），等目标标号生成后再回头改写那些指令。
+ * 本设计反过来：两个目标作为**继承属性**从调用方传进来（就是函数参数），
+ * 条件表达式内部任何一处要往外跳，目标此刻**已经在手上**，直接写上即可 ——
+ * 不需要待填链，也不需要第二遍回扫。代价是调用方必须先备好这两个标号
+ * （语句翻译里就是 `l_true`/`l_false` 那一对，见 Task 10）。
+ *
+ * ★ **短路是真短路，不是"先把两侧都翻译出来挑一个"**：`Exp1 AND Exp2` 产出的形状是
+ *     Cond(Exp1, l1, label_false) / [LABEL l1] / Cond(Exp2, label_true, label_false)
+ * —— Exp2 的整段代码排在 `LABEL l1` **之后**，而 Exp1 为假时控制流在
+ * `GOTO label_false` 处就出局了，永远落不到 l1，于是 **Exp2 的代码一次都不执行**。
+ * OR 对称（Exp1 为真直接跳 label_true，落不到 l1）。
+ * 这不是"顺手少几条指令"：Exp2 里可能有除零、函数调用、读输入，
+ * 执行与否是**可观察**的语义差别。
+ * Test/lab3/basic/logic.cmm 用 `z && (b / z)`（z == 0）守着这条：若短路退化成
+ * "两侧都翻译"，除零会让参考机抛 ZeroDivisionError、运行台当场报红。
+ * Test/unit/test_cond.c 用例⑦在单测层逐字节钉住同一件事（除法那条 IR 必须排在
+ * `LABEL l3` 之后）。
+ *
+ * 关系运算符的文本取自 AST 里 `RELOP` 结点的 **lexeme** —— syntax.y 直接存源码原文
+ * （`< <= > >= == !=` 之一）。`irRelopCode` 对表外的文本**响亮 abort**，
+ * 故这里不做任何归一化、也不猜；拼错的名字会在第一次真跑到时当场暴露，
+ * 而不是静默变成一个错的关系符。
+ *
+ * ★ **`NOT` 的翻译是"目标互换"**（真跳假、假跳真），见下面那一行递归调用。
+ * 这是本函数最容易写错的地方 —— 照抄目标的顺序（不互换）产出的 IR 仍然"看着挺像
+ * 那么回事"、甚至行数一模一样，只有跳转目标反了。Test/unit/test_cond.c 用例④
+ * 逐字节钉住 `!(n > 0)` 必须产出 `GOTO label2`（假目标）在前。
+ *
+ * RELOP / AND / OR 这三条分支都**不产生临时变量**，除非某一侧的表达形状认不出
+ * （既不是立即数也不是简单变量）—— 那就是 `operandForCond` 返回 NULL 的情形，
+ * 此时才先把它求值到一个临时变量。`if (n > 0)` 因此只有**一条** IF：
+ * 这正是设计文档 §6.1 表里"省 1 条指令"那一行、也是要求书 4.1.6 样例 1
+ * "优化后版本"的同一形态。
+ */
+
+/* 追加一条 `GOTO label`。 */
+static InterCodeList *appendGoto(InterCodeList *tail, const char *label) {
+    InterCode *c = newCode(IR_GOTO);
+    c->u.one.x = opLabel(label);
+    return irAppend(tail, c);
+}
+
+/* 追加一条 `LABEL label :`。 */
+static InterCodeList *appendLabel(InterCodeList *tail, const char *label) {
+    InterCode *c = newCode(IR_LABEL);
+    c->u.one.x = opLabel(label);
+    return irAppend(tail, c);
+}
+
+/* 条件的一侧能不能**直接**当 `IF` 的操作数用。
+ * 认得出的两种是立即数（`IF v1 > #0`）与简单变量；认不出的返回 NULL，
+ * 调用方据 `operandIsSimple` 决定"先求值到临时变量"。
+ * ★ 这里就是"`if (n > 0)` 只用一条 IF 指令"的**唯一**来处（设计文档 §6.1）。 */
+static Operand operandForCond(Node *e) {
+    if (classifyExp(e) == EX_INT) return opConst(atoi(e->child[0]->lexeme));
+    if (classifyExp(e) == EX_ID)  return opVar(varNameOf(e->child[0]->lexeme));
+    return NULL;
+}
+
+/* NULL（= operandForCond 认不出）不算"简单操作数"。 */
+static int operandIsSimple(Operand o) {
+    return o && (o->kind == OP_VAR || o->kind == OP_CONST);
+}
+
+InterCodeList *translateCond(InterCodeList *tail, Node *e,
+                             const char *lt, const char *lf) {
+    ExpKind k = classifyExp(e);
+
+    if (k == EX_BINOP && strcmp(e->child[1]->name, "RELOP") == 0) {
+        Operand a = operandForCond(e->child[0]);
+        Operand b = operandForCond(e->child[2]);
+        InterCode *c;
+        if (!operandIsSimple(a)) { Operand t = opVar(newTempName());
+                                   tail = translateExp(tail, e->child[0], t, NULL); a = t; }
+        if (!operandIsSimple(b)) { Operand t = opVar(newTempName());
+                                   tail = translateExp(tail, e->child[2], t, NULL); b = t; }
+        c = newCode(IR_IF);
+        c->u.iff.x = a; c->u.iff.y = b; c->u.iff.relop = irRelopCode(e->child[1]->lexeme);
+        c->u.iff.z = opLabel(lt);
+        tail = irAppend(tail, c);
+        return appendGoto(tail, lf);
+    }
+    if (k == EX_UNARY && isTok(e->child[0], "NOT"))
+        return translateCond(tail, e->child[1], lf, lt);        /* ★ 目标互换 */
+    if (k == EX_BINOP && strcmp(e->child[1]->name, "AND") == 0) {
+        char *l1 = newLabelName();
+        tail = translateCond(tail, e->child[0], l1, lf);
+        tail = appendLabel(tail, l1);                            /* Exp2 的代码落在它之后 */
+        return translateCond(tail, e->child[2], lt, lf);
+    }
+    if (k == EX_BINOP && strcmp(e->child[1]->name, "OR") == 0) {
+        char *l1 = newLabelName();
+        tail = translateCond(tail, e->child[0], lt, l1);
+        tail = appendLabel(tail, l1);                            /* Exp2 的代码落在它之后 */
+        return translateCond(tail, e->child[2], lt, lf);
+    }
+    /* (other cases)：求值到 t1 再与 #0 比较。
+     * 走到这里的是"不是关系/与/或/非"的一切 —— 裸变量、字面量、括号、算术式子、
+     * 函数调用……它们的真假就是"值 != 0"，故先求值再比较。
+     * 括号也在这一支（`(a > b)` 会多走一次求值与比较）：这是指导书表 4"其它"那行的
+     * 形态，本任务照搬 —— 把括号剥掉属于优化 pass（Task 16 起）的事，不在这里做。 */
+    {
+        Operand t1 = opVar(newTempName());
+        InterCode *c;
+        tail = translateExp(tail, e, t1, NULL);
+        c = newCode(IR_IF);
+        c->u.iff.x = t1; c->u.iff.y = opConst(0);
+        c->u.iff.relop = irRelopCode("!="); c->u.iff.z = opLabel(lt);
+        tail = irAppend(tail, c);
+        return appendGoto(tail, lf);
+    }
+}
+
 /* ══ 属于后续任务的函数：本任务只落**响亮失败的桩** ══════════════════════════
  *
- * translateExp 的形状要求它调这些函数，但它们的实现分别在 Task 9/10/11。
+ * translateExp 的形状要求它调这些函数，但它们的实现分别在 Task 10/11。
  * 桩不能"随便兜一个实现"：那会产出一份看着挺像那么回事的错 IR，端到端测不出来。
  * 故一律**诊断 + abort**（与本文件 classifyExp/classifyStmt 的失败形态一致）。
- * 每个桩在 Task N 落地时，把它替换成真实现即可。 */
+ * 每个桩在 Task N 落地时，把它替换成真实现即可。
+ * （Task 9 已经把自己那两个替换掉了：见上面的 translateCond，以及下面两个
+ *   ——它们不再是桩，故不在本节的桩清单里。） */
 static void notImplemented(const char *fn, int task) {
     fprintf(stderr, "internal error: %s 属于 Task %d，尚未实现\n", fn, task);
     abort();
 }
 
-/* Task 9：关系运算 / 与 / 或 —— 用短路求值算出一个 0/1 的值。 */
+/* 关系运算 / 与 / 或**作为值**：按设计文档 §6.2 的
+ *   `[place := #0]` + translate_Cond(...) + `[LABEL l_true]` `[place := #1]` `[LABEL l_false]`
+ * 生成 —— 条件成立的地方把 place 置 1，不成立的地方（l_false）保留先置的 0。
+ * place 为 NULL（值不被需要）时那两条 `place := …` 都不产，**但条件代码照常生成**：
+ * 跳转是这段表达式的全部语义，且两侧可能含函数调用这类副作用。 */
 static InterCodeList *translateCondAsValue(InterCodeList *tail, Node *e, Operand place) {
-    (void)tail; (void)e; (void)place;
-    notImplemented("translateCondAsValue", 9);
-    return NULL;
+    char *lt = newLabelName(), *lf = newLabelName();
+    InterCode *c;
+    if (place) { c = newCode(IR_ASSIGN); c->u.assign.x = place; c->u.assign.y = opConst(0);
+                 tail = irAppend(tail, c); }
+    tail = translateCond(tail, e, lt, lf);
+    tail = appendLabel(tail, lt);
+    if (place) { c = newCode(IR_ASSIGN); c->u.assign.x = place; c->u.assign.y = opConst(1);
+                 tail = irAppend(tail, c); }
+    return appendLabel(tail, lf);
 }
 
-/* Task 9：逻辑非 —— 算出一个 0/1 的值。 */
+/* 逻辑非**作为值**：与上面逐字同形 —— `!Exp` 的全部特别之处都收在
+ * translateCond 的"目标互换"那一行里（`translateCond` 认得 EX_UNARY/NOT），
+ * 这里不再重复一遍那个判断，免得两处实现有分歧。 */
 static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand place) {
-    (void)tail; (void)e; (void)place;
-    notImplemented("translateNotAsValue", 9);
-    return NULL;
+    return translateCondAsValue(tail, e, place);
 }
 
 /* Task 10：`f()` / `read()`。 */
