@@ -8,10 +8,12 @@
 - `ARG` 压栈 / `PARAM` 弹栈 ⇒ 实参书写顺序与形参声明顺序**相反**（§3.4）。
 - `/` 在装载期被改写成 `//` ⇒ 向下取整，`-7 / 2 == -4`（§3.7-1）。
 - 运行期越界 → `IndexError` → `status == "memory"`（§3.5）。
-- `*x := a op b` **崩**（`ARITH` 只做 `symTable[x][0]`，`*x` 不在表里 ⇒ `KeyError`）（§3.7-2）——
-  参考机的用途是预测判分机，这种崩溃要一起复现，不许"更宽容"地静默成功。
+- **写回目标为 `*x` 的指令崩**（`x := ...` 之外的写回走裸下标 `symTable[x][0]`，而 `*x`
+  不在表里 ⇒ `KeyError`）（§3.7-2）：`ARITH` 的 `*x := a op b` 与 `RETURN` 的
+  `*x := CALL f` 都属此类 —— 参考机的用途是预测判分机，这种崩溃要一起复现，
+  不许"更宽容"地静默成功。
 
-⚠️ `status == "memory"` 只许由**内存越界**产生：见 `test_only_memory_oob_maps_to_memory`，
+⚠️ `status == "memory"` 只许由**内存越界**产生：见 `test_non_indexerror_is_not_swallowed`，
 它钉住 `except` 不许被放宽成吞掉别的异常。
 """
 import sys, os
@@ -100,7 +102,12 @@ def test_floor_division_semantics():
 # --------------------------------------------------------------------- 越界与异常边界（§3.5）
 
 def test_memory_out_of_bound():
-    """写到 1 MiB（地址 1048576 = 第 262145 个字）⇒ IndexError ⇒ status 'memory'。"""
+    """写到 1 MiB（地址 1048576 = 第 262145 个字）⇒ IndexError ⇒ status 'memory'。
+
+    ⚠️ `oob.ir` 用 `*p := #1`（**MOV 的解引用写**）触发越界，故这条"内存"用例
+    **同时依赖 MOV 的解引用可写**。这不是缺陷（该夹具难绕开解引用路径），但下游若单独
+    收紧 `MOV`，它会以一个**与内存无关的理由**变红 —— 那时别把它当成回归。
+    """
     r = _run("oob.ir")
     assert r.status == "memory"
 
@@ -113,12 +120,39 @@ def test_arith_target_deref_reproduces_real_crash():
 
     `deref_arith.ir` 的 `p` 指向一片**合法**内存（`&q`），宽容版会安静写进去；
     故这条能真正区分"复现崩溃"与"静默成功"。
+
+    断言钉住**是哪一个** `KeyError`（`e.args == ("*p",)`）：只断言"抛了 KeyError"的话，
+    将来别处冒出一个无关的 `KeyError` 它照样绿。
     """
     try:
         _run("deref_arith.ir")
-    except KeyError:
+    except KeyError as e:
+        assert e.args == ("*p",), "KeyError 应指向被误用的 `*p`，实际 %r" % (e.args,)
         return
     raise AssertionError("`*x := a op b` 应复现真机的 KeyError，而不是静默成功")
+
+
+def test_call_target_deref_reproduces_real_crash():
+    """§3.7-2（同源缺口）：`*p := CALL f` 在真机上同样抛 **KeyError**。
+
+    真机 `RETURN` 写回返回值那一步是 `mem[symTable[stackItem[1]][0] // 4] = returnValue`
+    —— 与 `ARITH` 的写法**同构**的裸下标，**完全没有** `*` 处理。`tableInsert` 会把 `*`
+    剥掉再登记，所以符号表里只有 `p`、没有 `*p`。
+
+    `deref_call.ir` 的 `p` 指向**合法**内存（`p := &q`）⇒ 宽容版（`store_var`）会安静
+    写进 `q`，只有裸下标版才会崩 —— 故这条能真正区分"复现崩溃"与"静默成功"。
+    该形态**能通过装载**（`sanity_check` 只拦 `&`/`#` 开头的左值），不是不可达的病态输入。
+
+    反例（普通 `x := CALL f` 必须照常工作）由既有的 `test_call_restores_addresses`
+    （`rec.ir`：`result := CALL fact`）与 `test_arg_param_order`（`argorder.ir`：`r := CALL f`）
+    覆盖 —— 这半条不能省：否则这条收紧就无从与"把所有 CALL 都弄坏了"区分开。
+    """
+    try:
+        _run("deref_call.ir")
+    except KeyError as e:
+        assert e.args == ("*p",), "KeyError 应指向被误用的 `*p`，实际 %r" % (e.args,)
+        return
+    raise AssertionError("`*x := CALL f` 应复现真机的 KeyError，而不是静默成功")
 
 
 def test_mov_deref_still_works():
@@ -126,14 +160,14 @@ def test_mov_deref_still_works():
 
     `r := *p`（解引用读）与 `*p := #99`（解引用写）都必须正常工作 ——
     后者正是 §3.7-2 要求的绕行写法（先生成 `t := a op b`，再 `*x := t`）。
-    ⇒ 证明我们只收紧了 `ARITH`，没有把所有 `*` 都封了。
+    ⇒ 证明我们只收紧了 `ARITH` 与 `RETURN` 的**写回目标**，没有把所有 `*` 都封了。
     """
     r = _run("deref_mov.ir")
     assert r.outputs == [8, 99]
     assert r.status == "ok"
 
 
-def test_only_memory_oob_maps_to_memory():
+def test_non_indexerror_is_not_swallowed():
     """只有内存越界才走 'memory' 这支；别的异常必须原样漏出。
 
     `divzero.ir` 做 `1 / 0`：真机用 Python 的 `//`，会抛 **ZeroDivisionError** ——

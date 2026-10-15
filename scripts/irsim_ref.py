@@ -291,7 +291,12 @@ def _step(st, code, ip):
         for k, v in old_addrs.items():
             st.symtab[k] = v
         st.offset = old_offset
-        st.store_var(dst, rv)
+        # ★ 与上面的 `ARITH` **同构**：真机此处就是
+        #   `mem[symTable[stackItem[1]][0] // 4] = returnValue` —— 同样是**裸下标**，
+        #   不做 `*` 解引用（`tableInsert` 已把 `*` 剥掉，表里只有 `p`、没有 `*p`）。
+        #   ⇒ `*p := CALL f` 在此抛 **KeyError**；真机不捕它，我们也不捕（§3.7-2）。
+        #   注意这与 `MOV` **不同**（`MOV` 走 `store_var`、支持 `*` 目标）——见 deref_mov.ir。
+        st.mem[st.symtab[dst][0] // 4] = rv
         return ret_ip
     raise IRSyntaxError("unhandled %r" % (code,))
 

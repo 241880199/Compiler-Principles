@@ -192,6 +192,11 @@ lexical: $(LFILE)                              # 只跑 flex，从不编译产�
 - `main` 的变量在装载期按出现顺序分配 `offset`；**非 main 函数**的变量装载期地址为 `-1`，
   每次 `CALL` 时重新分配、`RETURN` 时恢复（§3.4）
 - 运行期越界 → `IndexError` → 报 "Illegal memory access"
+- ⚠️ **`PARAM` 遇到空的 `argumentStack` 也报"内存错"**：Python 的 `list.pop()` 在空表上抛
+  **`IndexError`**，而真机整个 `execute_code` 包在 `except IndexError` 里 ⇒ 一条**实参下溢**
+  会被报成 "Illegal memory access"。这是真机的**真实行为**，不是我们的 bug，**别去"修"它**。
+  ⇒ 生成器必须保证 `ARG` 与 `PARAM` 配对（§3.4）；参考机同构地把 `arg_stack.pop()` 放在
+  被 `except IndexError` 覆盖的 `_step` 里。
 - ⚠️ Python 的负下标会静默回绕（`mem[-1]` 合法），**不得依赖**，我们的生成器保证地址非负
 
 ### 3.6 效率指标
@@ -207,20 +212,31 @@ lexical: $(LFILE)                              # 只跑 flex，从不编译产�
 1. **`/` 是整除（向下取整）**：装载期把 `/` 改写成 Python 的 `//`。对负数与 C 的
    "向零截断"**不一致**（`-7/2` 在 C 里是 `-3`，在此虚拟机上被 `--` 语义算出 `-4`）。
    ⇒ 期望输出的生成器必须模仿 `//`（见 §9.2），且这条要作为一个**暂定取舍**记录下来（§11）。
-2. **`*x := a op b` 会崩**：`ARITH` 分支只做 `symTable[code[1]][0]`，而 `*x` 不在表里
-   （`tableInsert` 会把 `*` 剥掉，表里只有 `x`）⇒ 抛 **`KeyError`**，且真机**不捕这个异常**，
-   它会一路抛到调用者。
-   ⇒ 生成器**永远**先生成 `t := a op b`，再 `*x := t`。
-   **★ 参考机已复现该崩溃**（`scripts/irsim_ref.py` 的 `ARITH` 分支**不走 `store_var`**，
-   直接写 `st.mem[st.symtab[code[1]][0] // 4] = ...`，与真机的 `mem[symTable[x][0]//4] = ...` 同构）。
+2. **写回目标为 `*x` 的指令会崩（`*x := a op b` 与 `*x := CALL f` 同源）**：
+   `ARITH` 分支只做 `symTable[code[1]][0]`，`RETURN` 写回返回值那一步同样是
+   `mem[symTable[stackItem[1]][0] // 4] = returnValue` —— **两处都是裸下标、都没有 `*` 处理**，
+   而 `*x` 不在表里（`tableInsert` 会把 `*` 剥掉，表里只有 `x`）⇒ 抛 **`KeyError`**，
+   且真机**不捕这个异常**，它会一路抛到调用者。
+   ⇒ 生成器**永远**先生成 `t := a op b`，再 `*x := t`；调用结果的接收目标也不写 `*x`。
+   **★ 参考机已复现该崩溃**（`scripts/irsim_ref.py` 的 `ARITH` 与 `RETURN` 两个分支
+   **都不走 `store_var`**，直接写 `st.mem[st.symtab[...][0] // 4] = ...`，与真机同构）。
    这不是"特判 `*` 然后抛"，而是走**与真机同一条取值路径**。
    **理由**：参考机的用途是**预测判分机**，任何「更宽容」的偏离都只会制造假绿 ——
    若哪天生成器真吐出 `*x := a op b`，宽容版会报本地绿、真机却崩。
-   边界用一对用例钉住：`Test/lab3/unit_exec/deref_arith.ir`（应抛 `KeyError`）与
-   `deref_mov.ir`（`MOV` 的 `*` 源与 `*` 目标都**必须正常**，证明收紧只落在 `ARITH`）。
-   注意 `MOV`（`x := y`）**支持** `*x`，别一起封了。
+   边界用一组用例钉住：`Test/lab3/unit_exec/deref_arith.ir` 与 `deref_call.ir`（各应抛
+   `KeyError`，且断言钉住 `e.args == ("*p",)`，免得别处的无关 `KeyError` 顶包），加上
+   `deref_mov.ir`（`MOV` 的 `*` 源与 `*` 目标都**必须正常**，证明收紧只落在
+   `ARITH`/`RETURN` 的写回、没把所有 `*` 都封了）。
+   注意 `MOV`（`x := y`）**支持** `*x`，别一起封了；而 `READ`/`PARAM` 的左值装载期就要求
+   首字符是字母（§3.2），根本写不出 `*x`，与本案无关。
 3. **`&`/`#` 不能在 `:=` 左边**（装载期报语法错）。
 4. **一行一条指令**，空行会被跳过（不占下标），故输出**不写空行**。
+5. **`ip` 越过 `codes` 末尾 ⇒ 真机的 `error_code = 3`**：真机主循环里有
+   `if self.ip >= len(self.codes): error_code = 3`，收尾报 `"Simulation failed: PC error."`。
+   ⇒ 参考机的 `status == "pc"` 这一档**有真机依据**（`scripts/irsim_ref.py` 的 `_execute`
+   同构地在 `ip >= len(p.codes)` 时置 `status = "pc"`），不是我们编的。它意味着这份 IR
+   **没有正常的 `RETURN` 出口**（`main` 一路走到末尾而没 `RETURN`）——即生成器的缺陷，
+   而不是输入的问题。
 
 ---
 
