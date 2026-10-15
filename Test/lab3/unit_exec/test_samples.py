@@ -58,7 +58,8 @@ def test_sample_opt1_sign():
 def test_opt_version_uses_at_most_as_many_instructions():
     """要求书自己给的两版：优化版的 instrCnt 必须 <= 原始版（同一输入 n=-7）。
 
-    实测：原始版 sign.ir = 18 条，优化版 sample_opt1.ir = 11 条（见下一条的踪迹核对）。
+    实测（真机口径，跳转命中标号不计）：原始版 sign.ir = 15 条，优化版 sample_opt1.ir = 10 条
+    （见下一条的独立核对）。
     """
     a = _run("sign.ir", inputs=[-7])
     b = _run("sample_opt1.ir", inputs=[-7])
@@ -76,24 +77,54 @@ def _trace(path, inputs):
     return r, lines
 
 
-def test_instr_cnt_matches_execution_trace():
-    """`instr_cnt` 必须等于**实际执行路径**的踪迹行数，两版各核一遍。
+def _count_dispatch(path, inputs):
+    """跑一遍，并把 `_step` 的**调用次数**数出来（独立于 `Result.instr_cnt`）。
 
-    为什么单独钉这条：上面两条断言只比"优化版 <= 原始版"，一个**恒定**的计数偏移
-    （例如计数从 1 改成 0 起步、或把某个指令漏计）在两版上会同时出现而互相抵消。
-    这里用 `run(..., trace=True)` 的逐指令输出把口径钉死 —— 踪迹行与 `instr_cnt`
-    由同一处 `+1` 驱动，二者相等才算口径正确；再把两个**绝对值**（18 / 11）钉住，
-    使"整体偏移"这种错法也照不出来。
-
-    n=-7 时两条都是**走 `n < 0` 那一支**的动态路径（`sign.ir` 18 条 vs `sign.ir`
-    的三条路径分别是 18/17/12；`sample_opt1.ir` 三条路径分别是 11/10/11）。
+    `_execute` 主循环每轮派发一次 `_step`；这就是"应被计数"的**独立度量**。
+    这里用 monkeypatch 包一层计数，与 `_execute` 自己 `st.instr_cnt += 1` 的那一处
+    **机制上分离**：若有人把计数从主循环挪进 `_step` 的某个分支（例如"跳转不算一条"），
+    派发次数与 `instr_cnt` 就会分叉。
     """
-    a, ta = _trace(os.path.join(HERE, "sign.ir"), [-7])
-    b, tb = _trace(os.path.join(HERE, "sample_opt1.ir"), [-7])
+    import irsim_ref
+    n = [0]
+    real = irsim_ref._step
+
+    def counting(st, code, ip):
+        n[0] += 1
+        return real(st, code, ip)
+
+    irsim_ref._step = counting
+    try:
+        r = irsim_ref.run(path, inputs=list(inputs))
+    finally:
+        irsim_ref._step = real
+    return r, n[0]
+
+
+def test_instr_cnt_matches_dispatch_count_and_absolute_value():
+    """`instr_cnt` 必须等于主循环的**派发次数**（独立度量），且**绝对值**钉死。
+
+    为什么重写这条（Task 4 审查的 Important）：旧版断言的是"踪迹行数 == `instr_cnt`"，
+    而 `irsim_ref._execute` 里 `st.instr_cnt += 1` 与 `print(...st.instr_cnt...)`
+    在**同一个块**里、每轮恰一行 ⇒ 那个等式**恒成立**，无论计数规则怎么错都没有判别力
+    （是一条**同义反复**的假绿）。旧 docstring 说的"二者由同一处 `+1` 驱动，故相等即口径正确"
+    是**错的**，已删。
+
+    现在两件事一起做：
+    1. **独立**数 `_step` 的调用次数，断言 == `instr_cnt`（抓"计数被挪到某个分支"这类错）；
+    2. 钉住**绝对值** 15 / 10 —— 这一条才真正咬住真机口径"**跳转命中的 LABEL 不计**"
+       （旧口径下 `sign.ir` 是 18、`sample_opt1.ir` 是 11）。
+
+    n=-7 时两条都走 `n < 0` 那一支（`sign.ir` 三条路径 15/15/10；`sample_opt1.ir` 10/9/9）。
+    """
+    a, da = _count_dispatch(os.path.join(HERE, "sign.ir"), [-7])
+    b, db = _count_dispatch(os.path.join(HERE, "sample_opt1.ir"), [-7])
 
     assert a.outputs == [-1] and b.outputs == [-1]
-    assert len(ta) == a.instr_cnt == 18, (len(ta), a.instr_cnt)
-    assert len(tb) == b.instr_cnt == 11, (len(tb), b.instr_cnt)
+    assert da == a.instr_cnt == 15, (da, a.instr_cnt)
+    assert db == b.instr_cnt == 10, (db, b.instr_cnt)
     # 踪迹确实走的是 n<0 分支（只有该分支会写回 t6），不是别的路径
+    _, ta = _trace(os.path.join(HERE, "sign.ir"), [-7])
+    _, tb = _trace(os.path.join(HERE, "sample_opt1.ir"), [-7])
     assert any("'t6'" in ln for ln in tb), tb
     assert any("'t6'" in ln for ln in ta), ta

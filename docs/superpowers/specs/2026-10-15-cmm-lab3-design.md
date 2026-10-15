@@ -173,6 +173,9 @@ lexical: $(LFILE)                              # 只跑 flex，从不编译产�
    `symTable[k] = (getNewAddr(symTable[k][1]), 旧size, 旧array)`
    （`getNewAddr(size)` = 返回当前 `offset` 并 `offset += size`）
 3. `callStack.append((当前ip, f, oldAddrs, oldOffset))`；`ip = labelTable[f]`
+   —— ⚠️ **注意**：`run()` 主循环在 `execute_code` 返回后**无条件** `self.ip += 1`，
+   故**实际下一站是 `labelTable[f] + 1`**（`FUNCTION f :` 那一行被整条跨过，
+   **不执行、不计数**）。`GOTO` / `IF`（成立）到 `LABEL` 同理。详见 §3.6。
 
 `x := CALL f` 的记录形式为 `('CALL', x, f)`。
 
@@ -180,6 +183,8 @@ lexical: $(LFILE)                              # 只跑 flex，从不编译产�
 1. 若 `callStack` 为空 ⇒ **程序正常结束**，返回码 1，报 `Total instructions = instrCnt`
 2. `returnValue = getValue(x)`
 3. 弹出栈顶：`ip = 栈顶ip`；把 `oldAddrs` 逐项写回 `symTable`；`offset = oldOffset`
+   —— `RETURN` 压/写的是**调用点自身**的 `ip`，主循环再 `+1` 即落到**调用点的下一条**
+   （`CALL` 处压栈的是"调用点 ip"，故 `RETURN` 本身**不额外 `+1`**）
 4. `mem[symTable[栈顶函数名][0] // 4] = returnValue` —— 即**返回值写进调用点那个变量**（`x`）
 
 ⇒ **ARG 压栈 / PARAM 弹栈**，所以 **`ARG` 的书写顺序必须与 `PARAM` 声明顺序相反**。
@@ -201,9 +206,18 @@ lexical: $(LFILE)                              # 只跑 flex，从不编译产�
 
 ### 3.6 效率指标
 
-`execute_code` 的**第一件事**就是 `self.instrCnt += 1`，所以：
+`execute_code` 的**第一件事**就是 `self.instrCnt += 1`，所以**每一轮主循环派发 = 计数 1**。但
+`run()` 主循环在 `execute_code` 之后还有一个**无条件**的 `self.ip += 1`，而 `GOTO` / `IF`（成立）/
+`CALL` / `RETURN` 已把 `self.ip` 写成了**目标标号自身的下标**（`labelTable[...]`），
+两者叠加 ⇒ **跳转命中的那一行（必然是 `LABEL` / `FUNCTION` 行）被那个 `+1` 跨过**。
 
-> **效率 = 动态执行的指令行数。`LABEL`、`FUNCTION` 行、`DEC` 都会被计数。**
+> **效率 = 动态执行的指令行数。**
+> `DEC`（空操作）会被计数；作为**入口**或**顺序落到**的 `LABEL` / `FUNCTION` 行会被计数；
+> **被跳转（`GOTO`/`IF`/`CALL`）命中的那条 `LABEL` / `FUNCTION` 行被跨过 —— 既不执行、也不计数。**
+
+（此口径由**原版 irsim 对拍**确证并修正，见 `docs/lab3/refsim-provenance.md` §2-6。
+`scripts/irsim_ref.py::_step` 里 `GOTO`/`IF`(成立)/`CALL` 三个分支返回 `labelTable[...] + 1`，
+`RETURN` 返回压栈的 `调用点 ip + 1`，非跳转返回 `ip + 1`。）
 
 这直接给出优化方向：**减少被执行的指令条数**（而不是减少静态行数）。
 

@@ -241,19 +241,26 @@ def _step(st, code, ip):
     if op == "LABEL":
         return ip + 1
     if op == "READ":
-        v = st.inputs.pop(0) if st.inputs else 0
-        st.store_var(code[1], v)
+        # ★ 真机用 `result, ok = QInputDialog.getInt(...)`；**`ok` 为假（用户取消）
+        #   时什么都不写**，变量保留旧值（`if ok: mem[...] = result`）。我们的输入序列
+        #   耗尽 = 取消 ⇒ **不写**（而不是写 0）。定向 read_cancel.ir 钉住这条（§3.3）。
+        if st.inputs:
+            st.store_var(code[1], st.inputs.pop(0))
         return ip + 1
     if op == "WRITE":
         st.result.outputs.append(st.get_value(code[1]))
         return ip + 1
     if op == "GOTO":
-        return p.labels[code[1]]
+        # ★★ 计数口径（§3.6，已由原版对拍证伪并修正）：真机 `execute_code` 把 ip 写成
+        #   `labelTable[x]`（= **LABEL 行自身的下标**），回到 `run()` 又被**无条件**
+        #   `self.ip += 1` ⇒ 跳转**命中**的那条 LABEL 行被整条跨过（不执行、不计数）。
+        #   本函数返回的是"最终下一个 ip"，故必须 **+1** 才能复现该口径。
+        return p.labels[code[1]] + 1
     if op == "IF":
         x, relop, y, z = code[1], code[2], code[3], code[4]
         v1, v2 = st.get_value(x), st.get_value(y)
         if _eval_relop(v1, relop, v2):
-            return p.labels[z]
+            return p.labels[z] + 1        # ★ 同 GOTO：跳转命中标号不计（§3.6）
         return ip + 1
     if op == "MOV":
         st.store_var(code[1], st.get_value(code[2]))
@@ -282,8 +289,10 @@ def _step(st, code, ip):
             old_addrs[k] = list(st.symtab[k])
             st.symtab[k] = [st.new_addr(st.symtab[k][1]), st.symtab[k][1], st.symtab[k][2]]
         st.call_stack.append((ip + 1, dst, old_addrs, old_offset))
-        return p.labels[fname]
+        return p.labels[fname] + 1        # ★ 同 GOTO：跳转命中 FUNCTION 行不计（§3.6）
     if op == "RETURN":
+        # `ret_ip` 已是**调用点的下一条**（CALL 压栈的就是 `ip + 1`）：真机 RETURN 把 ip
+        # 写回压栈的调用点下标、主循环再 `+1` —— 与本处返回 `ret_ip` 等价，**故不加 +1**。
         if not st.call_stack:
             return None
         rv = st.get_value(code[1])

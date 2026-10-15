@@ -1,8 +1,11 @@
 """执行引擎用例（Task 3）。
 
 真机口径（irsim 2.0.2，设计文档 §3）：
-- `instrCnt` 在 `execute_code` 的第一件事就 +1 ⇒ **FUNCTION / LABEL / GOTO / DEC 全计数**
-  （§3.6：效率 = 动态执行的指令行数，不是静态行数）。
+- `instrCnt` 在 `execute_code` 的第一件事就 +1，主循环再**无条件** `ip += 1` ⇒
+  **FUNCTION / GOTO / DEC / RETURN 全计数**；`LABEL` 行**只在被"顺序落到"或作为入口时才计数**，
+  **被跳转（GOTO/IF/CALL）命中的那条 `LABEL` 行会被那个无条件 `+1` 整条跨过 —— 不执行、不计数**
+  （§3.6：效率 = 动态执行的指令行数，不是静态行数；此口径已由原版对拍证伪并修正，见
+  `docs/lab3/refsim-provenance.md` §2.6）。
 - `CALL` 为被调函数**重新分配**局部变量地址、`RETURN` 时恢复（§3.4）；
   递归靠这一点才能正确。
 - `ARG` 压栈 / `PARAM` 弹栈 ⇒ 实参书写顺序与形参声明顺序**相反**（§3.4）。
@@ -16,6 +19,8 @@
 ⚠️ `status == "memory"` 只许由**内存越界**产生：见 `test_non_indexerror_is_not_swallowed`，
 它钉住 `except` 不许被放宽成吞掉别的异常。
 """
+import contextlib
+import io
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
 from irsim_ref import run
@@ -42,21 +47,56 @@ def test_sign_function_covers_all_three_branches():
     assert _run("sign.ir", inputs=[9]).outputs == [1]
 
 
-def test_sign_function_read_exhausted_defaults_to_zero():
-    """`READ` 的输入耗尽时取 0（无输入 ⇒ n=0 ⇒ 走 else 分支，输出 0）。"""
+def test_read_exhausted_does_not_write_memory():
+    """`READ` 输入耗尽 = 真机弹窗被**取消** ⇒ **不写内存**，变量保留旧值（§3.3）。
+
+    真机 `READ` 是 `result, ok = QInputDialog.getInt(...)`，只有 `ok` 为真才
+    `mem[...] = result`；`ok` 为假（取消）时**什么都不写**。我们的输入序列耗尽即"取消"。
+
+    两半都要钉：
+    - `sign.ir` 无输入：被读的 `n` 是**全新变量**（本来 0）⇒ 不写也还是 0，输出 0
+      （这条**分不出**"写 0"与"不写"，只保证行为不变）；
+    - `read_cancel.ir`：`t := #5` 后 `READ t` 且不给输入 ⇒ 若"写 0"会得 `[0]`，
+      真机口径（不写）得 `[5]` —— **这一条才有判别力**。
+    """
     assert _run("sign.ir", inputs=[]).outputs == [0]
+    assert _run("read_cancel.ir", inputs=[]).outputs == [5]
 
 
 # --------------------------------------------------------------------- 指令计数口径（§3.6）
 
-def test_instruction_count_includes_labels():
-    """LABEL / FUNCTION / GOTO / RETURN 行都被计数（spec §3.6）。
+def test_jumped_over_label_is_not_executed_nor_counted():
+    """★ 真机计数口径（spec §3.6）：**跳转命中的那条 `LABEL` 行不执行、不计数**。
 
-    counted.ir 恰好走 4 条：FUNCTION main(→codes[0]) / GOTO / LABEL label1 / RETURN #0。
+    `counted.ir`：FUNCTION main / GOTO label1 / LABEL label1 / RETURN #0。
+
+    `GOTO label1` 把控制交给 `label1`（在 `codes` 里的下标 2），而真机主循环随后**无条件**
+    `ip += 1` ⇒ 下一站直接是 `RETURN #0`（下标 3），**`LABEL label1` 被整条跨过**。
+    ⇒ 恰好 **3** 条：FUNCTION main（入口，计数）、GOTO、RETURN。
+
+    旧口径（跳转目标不加 +1）会执行并计数那条被跳过的 `LABEL` ⇒ 得 4 —— 本用例即为此而设。
     """
     r = _run("counted.ir")
     assert r.status == "ok"
-    assert r.instr_cnt == 4
+    assert r.instr_cnt == 3
+
+
+def test_counted_trace_proves_the_skipped_line_is_a_label():
+    """上一条的对偶：用逐指令踪迹证明**被跨过的正是那条 `LABEL`**，不是别处漏计。
+
+    只断言 `instr_cnt == 3` 对"任意漏计一条"都成立；这里把踪迹内容钉住：
+    踪迹是 `('LABEL', 'main')` / `('GOTO', 'label1')` / `('RETURN', '#0')`，
+    **不含**被跳转命中的 `('LABEL', 'label1')`。
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        r = run(os.path.join(HERE, "counted.ir"), trace=True)
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert r.instr_cnt == len(lines) == 3, lines
+    assert any("('LABEL', 'main')" in ln for ln in lines), lines
+    assert any("'GOTO'" in ln for ln in lines), lines
+    assert any("'RETURN'" in ln for ln in lines), lines
+    assert not any("('LABEL', 'label1')" in ln for ln in lines), lines
 
 
 def test_instruction_count_includes_dec():
