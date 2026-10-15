@@ -1,0 +1,9 @@
+FUNCTION main :
+q := #8
+p := &q
+r := *p
+WRITE r
+*p := #99
+s := *p
+WRITE s
+RETURN #0

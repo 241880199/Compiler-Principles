@@ -8,6 +8,8 @@
 - `ARG` 压栈 / `PARAM` 弹栈 ⇒ 实参书写顺序与形参声明顺序**相反**（§3.4）。
 - `/` 在装载期被改写成 `//` ⇒ 向下取整，`-7 / 2 == -4`（§3.7-1）。
 - 运行期越界 → `IndexError` → `status == "memory"`（§3.5）。
+- `*x := a op b` **崩**（`ARITH` 只做 `symTable[x][0]`，`*x` 不在表里 ⇒ `KeyError`）（§3.7-2）——
+  参考机的用途是预测判分机，这种崩溃要一起复现，不许"更宽容"地静默成功。
 
 ⚠️ `status == "memory"` 只许由**内存越界**产生：见 `test_only_memory_oob_maps_to_memory`，
 它钉住 `except` 不许被放宽成吞掉别的异常。
@@ -101,6 +103,34 @@ def test_memory_out_of_bound():
     """写到 1 MiB（地址 1048576 = 第 262145 个字）⇒ IndexError ⇒ status 'memory'。"""
     r = _run("oob.ir")
     assert r.status == "memory"
+
+
+def test_arith_target_deref_reproduces_real_crash():
+    """spec §3.7-2：`*x := a op b` 在真机上抛 **KeyError**（`ARITH` 只做 `symTable[x][0]`）。
+
+    参考机的用途是**预测判分机**，故这种崩溃必须一起复现，不许"更宽容"地静默成功 ——
+    否则生成器真吐出这种 IR 时我们会得到假绿。
+
+    `deref_arith.ir` 的 `p` 指向一片**合法**内存（`&q`），宽容版会安静写进去；
+    故这条能真正区分"复现崩溃"与"静默成功"。
+    """
+    try:
+        _run("deref_arith.ir")
+    except KeyError:
+        return
+    raise AssertionError("`*x := a op b` 应复现真机的 KeyError，而不是静默成功")
+
+
+def test_mov_deref_still_works():
+    """**反例**：`MOV` 的两个方向都支持 `*`，别把收紧做过头。
+
+    `r := *p`（解引用读）与 `*p := #99`（解引用写）都必须正常工作 ——
+    后者正是 §3.7-2 要求的绕行写法（先生成 `t := a op b`，再 `*x := t`）。
+    ⇒ 证明我们只收紧了 `ARITH`，没有把所有 `*` 都封了。
+    """
+    r = _run("deref_mov.ir")
+    assert r.outputs == [8, 99]
+    assert r.status == "ok"
 
 
 def test_only_memory_oob_maps_to_memory():

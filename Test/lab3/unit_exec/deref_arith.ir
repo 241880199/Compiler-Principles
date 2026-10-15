@@ -1,0 +1,5 @@
+FUNCTION main :
+q := #8
+p := &q
+*p := q + #1
+RETURN #0

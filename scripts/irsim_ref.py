@@ -260,7 +260,11 @@ def _step(st, code, ip):
         return ip + 1
     if op == "ARITH":
         v1, v2 = st.get_value(code[2]), st.get_value(code[4])
-        st.store_var(code[1], _eval_arith(v1, code[3], v2))
+        # ★ 目标**不走 `store_var`**：真机此处就是 `mem[symTable[code[1]][0] // 4] = ...`，
+        #   不做 `*` 解引用（`tableInsert` 已把 `*` 剥掉，表里只有 `x`）。
+        #   ⇒ `*x := a op b` 在此抛 **KeyError**；真机不捕它，我们也不捕（§3.7-2）。
+        #   注意顺序与真机同构：Python 先算 RHS 再解析赋值目标。
+        st.mem[st.symtab[code[1]][0] // 4] = _eval_arith(v1, code[3], v2)
         return ip + 1
     if op == "DEC":
         return ip + 1
