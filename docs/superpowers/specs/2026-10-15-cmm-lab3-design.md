@@ -360,7 +360,7 @@ typedef struct InterCodeList_ {
 | `INT` | `[place := #值]` |
 | `ID` | `[place := 变量]` |
 | `Exp1 ASSIGNOP Exp2`（Exp1 为 ID） | 若 `place == NULL`：直接 `translate_Exp(Exp2, 变量)`<br>否则：`translate_Exp(Exp2, 变量)` + `[place := 变量]` |
-| `Exp1 PLUS/MINUS/STAR/DIV Exp2` | 两侧各要一个临时变量（除非可直接用立即数/变量），`[place := t1 op t2]` |
+| `Exp1 PLUS/MINUS/STAR/DIV Exp2` | 两侧各要一个临时变量（除非可直接用立即数/变量），`[place := t1 op t2]` |<br>（**落地位置**：Task 8 先一律经临时变量；"可直接用立即数/变量"的那半落在 **Task 9** 的条件翻译（`IF v1 > #0` 不落临时变量），其余等价形态由 **Task 16 起**的优化 pass 折叠消掉。）
 | `MINUS Exp1` | `translate_Exp(Exp1, t1)` + `[place := #0 - t1]` |
 | `LP Exp RP` | `translate_Exp(Exp, place)` |
 | `Exp1 RELOP/AND/OR Exp2`、`NOT Exp1` | `[place := #0]` + `translate_Cond(...)` + `[LABEL l_true] [place := #1] [LABEL l_false]`（指导书表 2） |
