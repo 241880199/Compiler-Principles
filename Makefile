@@ -208,12 +208,18 @@ cond-test: Test/unit/test_cond
 # 输入 Test/unit/lab3_prog_in.cmm **刻意避开本任务尚未实现的能力**：
 # 函数调用 / read / write / 数组下标都是 Task 11 的桩，走到就 abort。
 #
-# ★ 该夹具**不含关系运算**（条件写成裸变量 / `!x`），原因已披露在
-# Test/unit/test_translate_prog.c 顶部：RELOP 的操作符文本没进 AST
-# （src/lexical.l 发 RELOP 时 lexeme=NULL），`if (a > b)` 会让 translateCond
-# 响亮 abort（`unknown relop "(null)"`，退出码 134）。那是 Task 9 交付件的缺陷、
-# 修它要动不得改动的 src/lexical.l，见 .superpowers/sdd/lab3/task-10-report.md §7。
-# **修好后应把关系条件加回本夹具。**
+# ★ 该夹具**含关系运算**（`if (a > b)` 单字符、`while (t <= b)` 双字符，顺带钉住
+# lexer 的最长匹配）。历史：RELOP 的操作符文本原先没进 AST（src/lexical.l 发 RELOP
+# 时 lexeme 与 opText 都是 NULL），`if (a > b)` 会让 translateCond 响亮 abort
+# （`unknown relop "(null)"`，退出码 134），故本条夹具当时**刻意避开**关系条件
+# （见 .superpowers/sdd/lab3/task-10-report.md §7）。
+# Task 10b 修法：给 `Node` 加专用字段 `opText`（lexeme 保持 NULL，语法树输出逐字节
+# 不变），关系运算符文本填在那里。Task 10c 又把构造收进 `newRelop`
+# （tree.h/tree.c）——**词法器与单测共用同一条构造路径**，两边逐字段同形。
+# ⇒ 关系条件已在判据射程内（本夹具逐字节钉住它们产出的 `IF v1 > v2 …` /
+#   `IF v3 <= v2 …`），"修好后加回关系条件"这件事**已完成**，无需再动本夹具。
+# 兜底（裸变量求值到临时变量再与 #0 比）仍由 main 里的 `!x` 覆盖（NOT 会递归进兜底），
+# 故关系条件加回后**没有**丢掉原来那两条被测分支。
 Test/unit/test_translate_prog: Test/unit/test_translate_prog.c lex.yy.c syntax.tab.c \
                                src/tree.c src/report.c src/util.c src/translate.c src/ir.c \
                                src/tree.h src/report.h src/util.h src/translate.h src/ir.h

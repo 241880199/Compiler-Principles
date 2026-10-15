@@ -199,9 +199,11 @@ void translateResetNames(void) {
  * Test/unit/test_cond.c 用例⑦在单测层逐字节钉住同一件事（除法那条 IR 必须排在
  * `LABEL l3` 之后）。
  *
- * 关系运算符的文本取自 AST 里 `RELOP` 结点的**专用字段 `opText`** —— `src/lexical.l`
- * 的关系运算符规则把源码原文（`< <= > >= == !=` 之一）填在那里。
- * ★ 它**不在 `lexeme`**：RELOP 结点的 lexeme 由词法分析器刻意发成 NULL，好让语法树
+ * 关系运算符的文本取自 AST 里 `RELOP` 结点的**专用字段 `opText`** —— 源码原文
+ * （`< <= > >= == !=` 之一）由 `newRelop`（tree.h/tree.c）填在那里；**词法器
+ * （src/lexical.l 的 emitRelop）与单测（Test/unit/test_cond.c）共用它**，
+ * 故单测构造的 RELOP 结点与真产物**逐字段同形**。
+ * ★ 它**不在 `lexeme`**：newRelop 把 RELOP 结点的 lexeme 恒发成 NULL，好让语法树
  *   里就是一行裸 `RELOP`（打语法树的既有回归逐字节照此钉死）；翻译层要文本，
  *   故另有专用字段承载它（见 tree.h 里 opText 的注释与下方 relopTextOf）。
  * `irRelopCode` 对表外的文本**响亮 abort**，
@@ -272,32 +274,32 @@ static int isKnownBinOp(const char *op) {
            strcmp(op, "STAR")     == 0 || strcmp(op, "DIV")   == 0;
 }
 
-/* RELOP 结点的**运算符文本**（`< <= > >= == !=` 之一）。
+/* RELOP 结点的**运算符文本**（`< <= > >= == !=` 之一）—— **只看专用字段 `opText`**。
  *
- * 首选专用字段 `opText`：`src/lexical.l` 的关系运算符规则把源码原文填在那里
- * （见 tree.h 里 opText 的注释 —— 刻意不放进 `lexeme`，否则语法树输出会从裸 `RELOP`
- * 变成 `RELOP: >`，打语法树的既有回归逐字节当场全红）。
+ * 文本**刻意不在 `lexeme`**：`lexeme` 非 NULL 会让 printNode 从裸 `RELOP` 变成
+ * `RELOP: >`，打语法树的既有回归（Test/sample + Test/err，逐字节 diff）当场全红。
+ * 故 RELOP 的文本另有 `opText` 承载（见 tree.h），而 `lexeme` 对 RELOP **恒为 NULL**。
  *
- * ★ 回退到 `lexeme` 是给**手工构造的 AST** 留的路：Test/unit/test_cond.c 用
- *   `newToken("RELOP", 1, ">")` 建结点，把文本填在 lexeme 上 —— 那条路径不经过
- *   lexical.l，故它的 opText 恒为 NULL。它是既有单测且不在本次改动清单里，故两种
- *   来处都认下。**真源码那条路只有 opText 有机会非空**（lexical.l 对 RELOP 发的
- *   lexeme 就是 NULL）。
+ * ★ **为什么这里不再"opText 为空就回退读 lexeme"**：那个回退是给 Test/unit/test_cond.c
+ *   里**手工** `newToken("RELOP", 1, ">")`（文本塞在 lexeme 上）留的兼容路 ——
+ *   而**真词法器从来不那么干**。于是那批单测一直在**测一条真实产物不会走的路**
+ *   （判据的输入与真产物**不同形**），一条 Critical 因此躲过了单测、审查、回归三张网。
+ *   ⇒ 两边**共用 `newRelop`**（tree.h/tree.c）构造结点、逐字段同形，兼容路再无存在
+ *   的理由，故删掉 —— 保留它只会继续把这类"假绿"留在判据里。
  *
- * ★ 两者皆空 => **响亮失败**，绝不静默兜一个关系符：那会产出一份看着挺像那么回事、
+ * ★ `opText` 为空 => **响亮失败**，绝不静默兜一个关系符：那会产出一份看着挺像那么回事、
  *   却用了错关系符的 IR（本仓库最怕的那种失败；与 irRelopCode 的表外文本、classifyExp
  *   的 bad 标签同一套风格）。诊断里点名"关系运算符文本缺失"，让看到日志的人立刻知道
- *   该去查 `src/lexical.l` 的关系运算符规则。 */
+ *   该去查构造 RELOP 结点的地方（`newRelop` / `src/lexical.l` 的关系运算符规则）。 */
 static const char *relopTextOf(const Node *relop) {
-    const char *op = relop->opText ? relop->opText : relop->lexeme;
-    if (!op) {
-        fprintf(stderr, "internal error: 关系运算符文本缺失（RELOP 结点的 opText 与 lexeme"
-                        " 皆为空）at line %d"
-                        "（src/lexical.l 的关系运算符规则应把源码文本填进 opText）\n",
+    if (!relop->opText) {
+        fprintf(stderr, "internal error: 关系运算符文本缺失（RELOP 结点的 opText 为空）at line %d"
+                        "（RELOP 结点应经 newRelop 构造、由它把源码文本填进 opText；"
+                        "见 src/lexical.l 的关系运算符规则）\n",
                 nodeLine(relop));
         abort();
     }
-    return op;
+    return relop->opText;
 }
 
 InterCodeList *translateCond(InterCodeList *tail, Node *e,

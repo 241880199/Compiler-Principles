@@ -43,10 +43,23 @@ static Node *mkExp1(const char *tok, const char *lex) {
     return newNode("Exp", 1, newToken(tok, 1, lex));
 }
 
-/* 三孩子 Exp：`l OP r`。RELOP 的 lexeme 就是源码里的那六个之一（syntax.y 直接存原文），
- * AND/OR 的 lexeme 是 `&&`/`||`（判别与 irRelopCode 都只看 child[1] 的**名字**）。 */
+/* 三孩子 Exp：`l OP r`。
+ *
+ * ★ **RELOP 一律经 `newRelop` 构造**（tree.h/tree.c）—— 那是词法器
+ *   （src/lexical.l 的 emitRelop）与单测**共用**的同一条构造路径：文本进 `opText`、
+ *   `lexeme` 为 NULL。此前这里写 `newToken("RELOP", 1, ">")`（文本塞在 lexeme 上）、
+ *   而真词法器从不那么干 ⇒ 本文件那 9 条用例一直在**测一条真实产物不会走的路**，
+ *   一条 Critical（RELOP 文本缺失）因此躲过了单测、审查、回归三张网。
+ *   判据的输入必须与真实产物**同形**，故这里不再手工拼 RELOP 结点。
+ *   `src/translate.c` 的 relopTextOf 也随之删掉了"opText 为空就回退读 lexeme"那条
+ *   兼容路 —— 两边同形之后它再无存在理由（留着只会继续藏假绿）。
+ *
+ * AND/OR 的 lexeme 是 `&&`/`||`：判别与 irRelopCode 都只看 child[1] 的**名字**，
+ * 故它们照旧走 newToken（真词法器对它们发的 lexeme 本来就是 NULL —— 见 lexical.l；
+ * 这里填上纯粹是为了让结点带上一眼能读懂的操作符文本，不影响任何断言）。 */
 static Node *mkBin(Node *l, const char *tok, const char *lex, Node *r) {
-    return newNode("Exp", 3, l, newToken(tok, 1, lex), r);
+    Node *op = strcmp(tok, "RELOP") == 0 ? newRelop(lex, 1) : newToken(tok, 1, lex);
+    return newNode("Exp", 3, l, op, r);
 }
 
 /* `!inner`：二孩子 Exp，child[0] 是 NOT 终结符。 */
@@ -124,10 +137,11 @@ int main(void) {
                  "n > 0：两侧都是简单操作数 => 一条 IF，不落临时变量");
     }
 
-    /* ══ ③ 六个关系运算符的 lexeme -> irRelopCode 映射 ══
-     * AST 里 RELOP 的 lexeme 是 `< <= > >= == !=` 之一。拼错一个名字，
-     * irRelopCode 会**响亮 abort**（不会静默变成 `<`），但那只在真跑到时才发作；
-     * 这条把六个都走一遍，逐字节钉住打印出来的符号就是源码里那个。 */
+    /* ══ ③ 六个关系运算符的 opText -> irRelopCode 映射 ══
+     * RELOP 结点的**运算符文本**在专用字段 `opText`（`< <= > >= == !=` 之一，
+     * 由 newRelop 填；见 tree.h）。拼错一个名字，irRelopCode 会**响亮 abort**
+     * （不会静默变成 `<`），但那只在真跑到时才发作；这条把六个都走一遍，
+     * 逐字节钉住打印出来的符号就是源码里那个。 */
     {
         static const char *const relops[6] = { "<", "<=", ">", ">=", "==", "!=" };
         int i;
@@ -142,7 +156,7 @@ int main(void) {
             t = irList();
             t = translateCond(t, cond, lt, lf);
             snprintf(want, sizeof want, "IF v1 %s #0 GOTO label1\nGOTO label2\n", relops[i]);
-            expectIR(t, want, "RELOP lexeme 映射正确");
+            expectIR(t, want, "RELOP opText 映射正确");
         }
     }
 
