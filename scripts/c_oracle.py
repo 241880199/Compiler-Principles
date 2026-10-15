@@ -403,7 +403,10 @@ def _run_via_wsl(c_file, in_file):
     script = "gcc -w -o %s %s && CMM_IN=%s %s" % (
         _shq(exe_wsl), _shq(c_wsl), _shq(in_wsl), _shq(exe_wsl))
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
-    r = subprocess.run(["wsl.exe", "-d", WSL_DIST, "--", "bash", "-lc", script],
+    # 必须用**非登录** shell（`bash -c`，不可用 `bash -lc`）：`-l` 会 source
+    # ~/.bash_profile / ~/.profile，只要它们有任何 stdout 输出，就会被捕获进 .exp，
+    # 得到一份"被污染但看着像正常数字"的期望值 —— 最难发现的一类静默错误。
+    r = subprocess.run(["wsl.exe", "-d", WSL_DIST, "--", "bash", "-c", script],
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
     if r.returncode != 0:
@@ -418,6 +421,8 @@ def generate(cmm_path, in_path):
         src = f.read()
     csrc = transform(src)
     os.makedirs(BUILD_DIR, exist_ok=True)
+    # 生成的 .c/.bin 只按 basename 命名 ⇒ 前提：用例名在 Test/lab3/** 内必须唯一
+    # （否则不同目录下的同名 .cmm 会互相覆盖 build/oracle/ 里的中间件）。
     stem = os.path.splitext(os.path.basename(cmm_path))[0]
     c_file = os.path.join(BUILD_DIR, stem + ".c")
     with open(c_file, "w", encoding="utf-8") as f:

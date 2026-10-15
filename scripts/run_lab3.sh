@@ -73,6 +73,14 @@ for cmm in "${cmms[@]}"; do
         fail=$((fail + 1)); failed+=("$rel"); continue
     fi
 
+    # 缺 .in：FAIL，不得 SKIP —— 与"缺 .exp"并列的显式守卫。
+    # 若放任它过去，参考机的 _read_inputs 会抛 FileNotFoundError，最终只报一句
+    # 含糊的"参考机执行失败"加一段回溯，看不出真正缺的是 .in。
+    if [ ! -f "$in" ]; then
+        echo "FAIL $rel: 缺 .in（缺输入必须 FAIL，不得 SKIP）"
+        fail=$((fail + 1)); failed+=("$rel"); continue
+    fi
+
     rm -f "$ir"
     "$PARSER" "$cmm" "$ir" >"$TMP/parser.out" 2>"$TMP/parser.err"
     rc=$?
