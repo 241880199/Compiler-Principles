@@ -1,0 +1,13 @@
+FUNCTION f1 :
+DEC v1 8
+v1 := #5
+v2 := &v1
+v3 := v2 + #8
+v4 := *v3
+*t4 := v1
+IF v1 > #0 GOTO label1
+GOTO label2
+LABEL label1 :
+ARG &v1
+v5 := CALL f2
+RETURN #0

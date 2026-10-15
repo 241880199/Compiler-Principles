@@ -120,6 +120,15 @@ report-test: Test/unit/test_report
 	@bash -o pipefail -c './Test/unit/test_report | diff -u Test/unit/report_expected.txt -' \
 	    && echo "PASS report"
 
+# ir 单测：只测**打印格式** —— 那是 ir 这一层唯一的对外行为。
+# 打印格式不是"好看的"选择：真机装载器按空白分词、逐行 sanity_check，
+# 行数不对（空行）会直接改变 codes 的下标，故这里逐字节钉住。
+Test/unit/test_ir: Test/unit/test_ir.c src/ir.c src/ir.h src/util.c src/util.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_ir.c src/ir.c src/util.c
+
+ir-test: Test/unit/test_ir
+	@bash -o pipefail -c './Test/unit/test_ir | diff -u Test/unit/ir_expected.txt -' && echo "PASS ir"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -130,9 +139,10 @@ report-test: Test/unit/test_report
 # 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
-.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test
+.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
+	      Test/unit/test_ir \
 	      Test/regress/driver Test/regress/*.o
