@@ -13,10 +13,23 @@
  *   3) `Stmt : error SEMI` 与 `Stmt : Exp SEMI` 同形，靠 child[0] 是不是语法结点
  *      区分（无语法错误的输入里不该出现前者）。
  *
+ * 另有第 4 条断言（文件最末）专门钉"未识别形状必须响亮失败"：`Exp : FLOAT` 与
+ * `Exp : INT` 形状完全相同，判别表**没有**对应分支，它必须走"诊断 + abort"那条路，
+ * 而不是被静默兜底成 EX_INT。它是本文件唯一断言"失败形态"的用例，排最末（理由见该处注释）。
+ *
  * 断言提示一律写 stderr：本单测在 Makefile 里以**退出码**为判据，stdout 不参与比对。
  */
+/* ★ 必须写在本文件**任何 include 之前**：Makefile 用的是 `-std=c99`（严格 ISO C99，
+ * 不是 gnu99），fork/pipe/dup2/read/waitpid 这些 POSIX 接口在该模式下**不声明** ——
+ * 漏掉这行会得到一串 implicit declaration 警告（本项目"零 gcc 警告"的判据会当场变红）。
+ * 200809L = POSIX.1-2008，够覆盖上面这几个接口。 */
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>      /* SIGABRT */
+#include <unistd.h>      /* fork/pipe/dup2/read/close/_exit */
+#include <sys/wait.h>    /* waitpid/WIFSIGNALED/WTERMSIG */
 #include "tree.h"
 #include "translate.h"
 
@@ -102,6 +115,61 @@ int main(void) {
     /* Stmt : WHILE LP Exp RP Stmt —— 孩子数与 IF 相同，必须靠 WHILE 区分 */
     Node *sw = newNode("Stmt", 5, newToken("WHILE",3,"while"), newToken("LP",3,"("), v, newToken("RP",3,")"), sif);
     expect(classifyStmt(sw), ST_WHILE, "Stmt:WHILE");
+
+    /* ══ Exp : FLOAT —— 判别表里唯一一条"形状与已识别分支相同、但必须响亮失败"的断言。 ══
+     *
+     * FLOAT 与 INT/ID 形状**完全一样**（nchild==1、child[0] 是终结符），只有 token 名字
+     * 能区分。要求书假设 1 保证实验三输入不含浮点，故这条在正常判分路径上不可达；但
+     * **不可达不等于可以静默** —— 真把 `1.5` 当整数译，下游会拿它的 lexeme 当整数用，
+     * 生成一份"看着挺像那么回事"的错 IR，端到端测不出来。故断言它**响亮失败**。
+     *
+     * 为什么单独 fork() 一个子进程来跑本条（本文件唯一的隔离点）：
+     *   classifyExp 判不出来时用 abort() 收场，而 abort() 带 SIGABRT 结束**整个进程**。
+     *   若在本进程直接调，一旦有人把静默兜底改回来（本条应当打红），abort 会把本进程连同
+     *   它**后面**的断言一起杀掉 —— "有一条该红"于是伪装成"进程崩了、后面一条没跑"，
+     *   归因不到本条上。上面那三条 CompSt/ExpSEMI/RETURN 被刻意排在 IF/WHILE 之前，正是
+     *   同一个道理（让唯一的 abort 点落在最后，别屏蔽后面的断言）。而本条的失败形态**本身
+     *   就是"进程被 abort 杀掉"**，没法靠排最后来观测（排到最后就没人接着打印了），故改用
+     *   子进程把 abort 关在门外：父进程只看 waitpid 报告的终止方式，"响亮失败"于是一条
+     *   可判定的断言。本条排在全文件最后，与上述"abort 点靠后"的惯例一致。 */
+    {
+        int fds[2];
+        if (pipe(fds) != 0) {
+            fprintf(stderr, "FAIL Exp:FLOAT: pipe() 失败\n");
+            failures++;
+        } else {
+            pid_t pid = fork();
+            if (pid < 0) {
+                fprintf(stderr, "FAIL Exp:FLOAT: fork() 失败\n");
+                failures++;
+            } else if (pid == 0) {
+                /* 子进程：诊断走管道（父进程要核它含不含孩子 token 名），免得与本单测
+                 * 逐条 ok/FAIL 的输出混在同一路 stderr 上。 */
+                close(fds[0]);
+                dup2(fds[1], 2);
+                close(fds[1]);
+                (void)classifyExp(newNode("Exp", 1, newToken("FLOAT", 1, "1.5")));
+                _exit(0);   /* ← 走到这里 = 静默兜底回来了（返回了，而非 abort） */
+            } else {
+                char buf[512];
+                ssize_t n;
+                int st = 0;
+                int aborted, named;
+                close(fds[1]);
+                n = read(fds[0], buf, sizeof buf - 1);
+                if (n < 0) n = 0;
+                buf[n] = '\0';
+                close(fds[0]);
+                waitpid(pid, &st, 0);
+                aborted = WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT;
+                named   = strstr(buf, "FLOAT") != NULL;
+                if (!(aborted && named))
+                    fprintf(stderr, "     note Exp:FLOAT: aborted=%d 终止信号=%d 诊断=<%s>\n",
+                            aborted, WIFSIGNALED(st) ? WTERMSIG(st) : 0, buf);
+                expect(aborted && named, 1, "Exp:FLOAT 响亮失败（abort 且诊断含孩子 token 名）");
+            }
+        }
+    }
 
     fprintf(stderr, failures ? "FAILURES=%d\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;

@@ -24,7 +24,14 @@ ExpKind classifyExp(Node *e) {
     if (e->nchild == 1) {
         if (isTok(e->child[0], "INT"))   return EX_INT;
         if (isTok(e->child[0], "ID"))    return EX_ID;
-        return EX_INT;                    /* FLOAT 由假设 1 排除；走到这里说明假设被破坏 */
+        /* ★ 剩下的 `Exp : FLOAT`（src/syntax.y）会落到这里：它与 `Exp : INT` **形状
+         * 完全相同**（nchild==1、child[0] 都是终结符），只有 token 名字能区分。
+         * 要求书假设 1 保证实验三输入**不含浮点**，故正常判分路径上这条不可达；
+         * 但**不可达不等于可以静默** —— 若在此兜底 `return EX_INT`，一个浮点字面量
+         * 会被当成整数，下游拿它的 lexeme（"1.5"）当整数用，生成一份"看着挺像那么回事"
+         * 的错 IR，端到端（parser + 真机）测不出来。故与全表其它未识别分支一致：
+         * **响亮失败**（诊断 + abort），绝不猜一个类型。 */
+        goto bad;
     }
     if (e->nchild == 2) return EX_UNARY;  /* MINUS Exp / NOT Exp */
     if (e->nchild == 3) {
@@ -40,15 +47,23 @@ ExpKind classifyExp(Node *e) {
         if (isTok(e->child[0], "ID")) return EX_CALLN;   /* ID LP Args RP */
         if (isTok(e->child[1], "LB")) return EX_INDEX;   /* Exp LB Exp RB */
     }
-    fprintf(stderr, "internal error: unclassified Exp (nchild=%d) at line %d\n",
-            e->nchild, nodeLine(e));
+bad:
+    /* 诊断带上 nchild、行号与**实际的孩子 token 名**：看日志的人一眼就知道是 FLOAT
+     * 还是别的没见过的形状。(none) 兜底只为"打印诊断时别再崩一次"，不是在给未知形状
+     * 找台阶下 —— 紧随其后的 abort() 才是这些分支的收场。 */
+    fprintf(stderr, "internal error: unclassified Exp (nchild=%d) at line %d, child[0]=%s\n",
+            e->nchild, nodeLine(e),
+            (e->nchild >= 1 && e->child[0] && e->child[0]->name) ? e->child[0]->name : "(none)");
     abort();
 }
 
 StmtKind classifyStmt(Node *s) {
     if (s->nchild == 1) {
-        if (s->child[0]->type == NT_COMPST) return ST_COMPST;
-        goto bad;
+        /* 同族其它分支都先判 NULL 再判类型（见下面 nchild==2 那处）。`Stmt : CompSt`
+         * 的孩子不会是 NULL，但 `error` 伪符号的语义值可能为 NULL —— 直接解引用会段错误，
+         * 而全表的失败形态必须统一是**响亮的 abort**，不是随机崩溃。 */
+        if (s->child[0] == NULL || s->child[0]->type != NT_COMPST) goto bad;
+        return ST_COMPST;
     }
     if (s->nchild == 2) {
         /* `Stmt : Exp SEMI` 与 `Stmt : error SEMI` 同形。后者的 $1 是 error 伪符号，
