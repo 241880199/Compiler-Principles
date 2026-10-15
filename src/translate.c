@@ -19,10 +19,10 @@
  *                       目标互换那一行，两条路径共用同一个实现）
  *   条件本体         -> translateCond(tail, e, label_true, label_false)：**短路**，
  *                       两个跳转目标是**继承属性**（函数参数），不做回填（Task 9）
- *   read()           -> translateCall0（Task 10）
- *   f()              -> translateCall0（Task 10）
- *   f(Args)          -> translateCallN（Task 10）
- *   write(Exp)       -> translateCallN（Task 10）
+ *   read()           -> translateCall0（Task 11）
+ *   f()              -> translateCall0（Task 11）
+ *   f(Args)          -> translateCallN（Task 11）
+ *   write(Exp)       -> translateCallN（Task 11）
  *   Exp1[Exp2]       -> translateIndex（Task 11）
  *   Exp1.ID          -> translateField（选做 3.1，本实验不实现）
  *
@@ -199,8 +199,12 @@ void translateResetNames(void) {
  * Test/unit/test_cond.c 用例⑦在单测层逐字节钉住同一件事（除法那条 IR 必须排在
  * `LABEL l3` 之后）。
  *
- * 关系运算符的文本取自 AST 里 `RELOP` 结点的 **lexeme** —— syntax.y 直接存源码原文
- * （`< <= > >= == !=` 之一）。`irRelopCode` 对表外的文本**响亮 abort**，
+ * 关系运算符的文本取自 AST 里 `RELOP` 结点的**专用字段 `opText`** —— `src/lexical.l`
+ * 的关系运算符规则把源码原文（`< <= > >= == !=` 之一）填在那里。
+ * ★ 它**不在 `lexeme`**：RELOP 结点的 lexeme 由词法分析器刻意发成 NULL，好让语法树
+ *   里就是一行裸 `RELOP`（打语法树的既有回归逐字节照此钉死）；翻译层要文本，
+ *   故另有专用字段承载它（见 tree.h 里 opText 的注释与下方 relopTextOf）。
+ * `irRelopCode` 对表外的文本**响亮 abort**，
  * 故这里不做任何归一化、也不猜；拼错的名字会在第一次真跑到时当场暴露，
  * 而不是静默变成一个错的关系符。
  *
@@ -268,6 +272,34 @@ static int isKnownBinOp(const char *op) {
            strcmp(op, "STAR")     == 0 || strcmp(op, "DIV")   == 0;
 }
 
+/* RELOP 结点的**运算符文本**（`< <= > >= == !=` 之一）。
+ *
+ * 首选专用字段 `opText`：`src/lexical.l` 的关系运算符规则把源码原文填在那里
+ * （见 tree.h 里 opText 的注释 —— 刻意不放进 `lexeme`，否则语法树输出会从裸 `RELOP`
+ * 变成 `RELOP: >`，打语法树的既有回归逐字节当场全红）。
+ *
+ * ★ 回退到 `lexeme` 是给**手工构造的 AST** 留的路：Test/unit/test_cond.c 用
+ *   `newToken("RELOP", 1, ">")` 建结点，把文本填在 lexeme 上 —— 那条路径不经过
+ *   lexical.l，故它的 opText 恒为 NULL。它是既有单测且不在本次改动清单里，故两种
+ *   来处都认下。**真源码那条路只有 opText 有机会非空**（lexical.l 对 RELOP 发的
+ *   lexeme 就是 NULL）。
+ *
+ * ★ 两者皆空 => **响亮失败**，绝不静默兜一个关系符：那会产出一份看着挺像那么回事、
+ *   却用了错关系符的 IR（本仓库最怕的那种失败；与 irRelopCode 的表外文本、classifyExp
+ *   的 bad 标签同一套风格）。诊断里点名"关系运算符文本缺失"，让看到日志的人立刻知道
+ *   该去查 `src/lexical.l` 的关系运算符规则。 */
+static const char *relopTextOf(const Node *relop) {
+    const char *op = relop->opText ? relop->opText : relop->lexeme;
+    if (!op) {
+        fprintf(stderr, "internal error: 关系运算符文本缺失（RELOP 结点的 opText 与 lexeme"
+                        " 皆为空）at line %d"
+                        "（src/lexical.l 的关系运算符规则应把源码文本填进 opText）\n",
+                nodeLine(relop));
+        abort();
+    }
+    return op;
+}
+
 InterCodeList *translateCond(InterCodeList *tail, Node *e,
                              const char *lt, const char *lf) {
     ExpKind k = classifyExp(e);
@@ -281,7 +313,7 @@ InterCodeList *translateCond(InterCodeList *tail, Node *e,
         if (!operandIsSimple(b)) { Operand t = opVar(newTempName());
                                    tail = translateExp(tail, e->child[2], t, NULL); b = t; }
         c = newCode(IR_IF);
-        c->u.iff.x = a; c->u.iff.y = b; c->u.iff.relop = irRelopCode(e->child[1]->lexeme);
+        c->u.iff.x = a; c->u.iff.y = b; c->u.iff.relop = irRelopCode(relopTextOf(e->child[1]));
         c->u.iff.z = opLabel(lt);
         tail = irAppend(tail, c);
         return appendGoto(tail, lf);
@@ -337,7 +369,8 @@ InterCodeList *translateCond(InterCodeList *tail, Node *e,
 
 /* ══ 属于后续任务的函数：本任务只落**响亮失败的桩** ══════════════════════════
  *
- * translateExp 的形状要求它调这些函数，但它们的实现分别在 Task 10/11。
+ * translateExp 的形状要求它调这些函数，但它们的实现分别在 Task 11（调用/数组下标/
+ * 非 ID 左值）与选做 3.1（结构体域）。
  * 桩不能"随便兜一个实现"：那会产出一份看着挺像那么回事的错 IR，端到端测不出来。
  * 故一律**诊断 + abort**（与本文件 classifyExp/classifyStmt 的失败形态一致）。
  * 每个桩在 Task N 落地时，把它替换成真实现即可。
@@ -387,17 +420,17 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
     return translateCondAsValue(tail, e, place);
 }
 
-/* Task 10：`f()` / `read()`。 */
+/* Task 11：`f()` / `read()`。 */
 static InterCodeList *translateCall0(InterCodeList *tail, Node *e, Operand place) {
     (void)tail; (void)e; (void)place;
-    notImplemented("translateCall0", 10);
+    notImplemented("translateCall0", 11);
     return NULL;
 }
 
-/* Task 10：`f(Args)` / `write(Exp)`。 */
+/* Task 11：`f(Args)` / `write(Exp)`。 */
 static InterCodeList *translateCallN(InterCodeList *tail, Node *e, Operand place) {
     (void)tail; (void)e; (void)place;
-    notImplemented("translateCallN", 10);
+    notImplemented("translateCallN", 11);
     return NULL;
 }
 
@@ -537,10 +570,10 @@ InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *pl
         return translateExp(tail, e->child[1], place, placeIsAddr);
 
     case EX_CALL0:
-        return translateCall0(tail, e, place);                  /* Task 10 */
+        return translateCall0(tail, e, place);                  /* Task 11 */
 
     case EX_CALLN:
-        return translateCallN(tail, e, place);                  /* Task 10 */
+        return translateCallN(tail, e, place);                  /* Task 11 */
 
     case EX_INDEX:
         return translateIndex(tail, e, place, placeIsAddr);     /* Task 11 */

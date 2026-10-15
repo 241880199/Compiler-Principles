@@ -14,30 +14,22 @@
  * 输入是真源码、树是真 parser 的产物、期望值是**实测输出钉住的**。
  *
  * ── 输入为什么长这样（Test/unit/lab3_prog_in.cmm）──────────────────────────
- * **刻意避开本任务尚未实现的能力**：函数调用 / read / write / 数组下标都是 Task 11
+ * **刻意避开尚未实现的能力**：函数调用 / read / write / 数组下标都是 Task 11
  * 的桩，走到就 abort，混进来只会让本单测死在别人的任务上、而不是死在它要测的东西上。
- * 它覆盖的恰好是本任务新写的每一条分支：赋值语句、`if`、`if-else`、`while`、
- * `return`、**嵌套复合语句**（块内局部定义 + 块内语句）、两个函数与形参
+ * 它覆盖的恰好是语句/复合语句/函数翻译的每一条分支：赋值语句、`if`、`if-else`、
+ * `while`、`return`、**嵌套复合语句**（块内局部定义 + 块内语句）、两个函数与形参
  * （PARAM 按声明顺序）、以及 `if` 的无花括号单语句体。
- * 三个条件因此写成**裸变量 / `!x`**（`if (t)`、`while (t)`、`if (!x)`）——
- * 那两条是条件翻译的"其它"兜底与 NOT，不需要关系运算符。
  *
- * ★★ **已知边界（明确披露，不是"没测到"）：本夹具不含关系运算** ────────────────
- * `if (a > b)` 这类输入会让**本编译器当场 abort**，原因不在 Task 10 的新代码里：
- * `src/lexical.l:115-120` 把六个关系运算符统统发成 `emit(RELOP, "RELOP", NULL)`
- * ——**操作符文本没进 AST**，而 `translateCond` 用 `irRelopCode(child[1]->lexeme)`
- * 去取它，拿到 NULL 后按本仓库纪律响亮失败：
- *
- *     $ ./Test/unit/test_translate_prog < <(echo 'int main(){int a; a=1; if (a>0) a=2; return 0;}')
- *     internal error: unknown relop "(null)"        # 退出码 134
- *
- * 这是 Task 9 交付件里的一条**潜在致命缺陷**，Task 9 自己的单测看不见它 ——
- * 那些用例是**手工构造**的 `newToken("RELOP", 1, ">")`，lexeme 是测试自己填的，
- * 而真 parser 给的是 NULL。（"判据的输入与真实产物不同形"这类失效，本项目已栽过多次。）
- * 本任务**无权**修它（`src/lexical.l` 在 Global Constraints 的不得改动清单里，
- * 且天真的修法会让 printTree 多打出 `RELOP: <`，直接弄红实验一/二的 70 条回归）。
- * ⇒ 已作为 Critical 上报（.superpowers/sdd/lab3/task-10-report.md §7）。
- * **该缺陷修好后，应把关系条件加回本夹具**：那时 `if (t < b)` 才在判据的射程内。
+ * ── 关系条件（Task 10b 修 Critical 后加回）────────────────────────────────
+ * 本夹具原本**不含**关系运算（条件写成裸变量 / `!x`），因为 `if (a > b)` 会让编译器
+ * 当场 abort：`src/lexical.l` 的六个 RELOP 规则一律发 `emit(RELOP, "RELOP", NULL)`
+ * ——**运算符文本没进 AST**，而 `translateCond` 要拿它算 `irRelopCode`。
+ * Task 10b 修法：**另开专用字段** `Node.opText`（lexeme 保持 NULL，故语法树输出
+ * 逐字节不变），lexical.l 的关系规则填它，`translateCond` 读它（见 tree.h / translate.c）。
+ * ⇒ 现在 `if (a > b)`（单字符）与 `while (t <= b)`（双字符，顺带钉住 lexer 的最长匹配）
+ *   都在判据射程内，逐字节钉住它们产出的 `IF v1 > v2 …` / `IF v3 <= v2 …`。
+ * 兜底（裸变量求值到临时变量再与 #0 比）仍由 `main` 里的 `!x` 覆盖（NOT 会递归进兜底），
+ * 故加回关系条件**没有**丢掉原来那两条被测分支。
  *
  * ── 输出协议 ───────────────────────────────────────────────────────────────
  * stdout = **唯一**被逐字节比对的产物（Makefile 的 `prog-test` 目标拿它与

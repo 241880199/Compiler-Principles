@@ -37,6 +37,7 @@ Node *newToken(const char *name, int line, const char *lexeme) {
     n->name   = xstrdup(name);
     n->line   = line;
     n->lexeme = xstrdup(lexeme);
+    n->opText = NULL;       /* 只有 lexical.l 的 RELOP 规则会填它（见 tree.h） */
     n->nchild = 0;
     n->child  = NULL;
     return n;
@@ -52,6 +53,7 @@ Node *newNode(const char *name, int nchild, ...) {
     n->name   = xstrdup(name);
     n->line   = 0;          /* 行号一律由 nodeLine() 推导，不在此处指定 */
     n->lexeme = NULL;
+    n->opText = NULL;       /* 只对词法单元有意义（见 tree.h） */
     n->nchild = nchild;
     n->child  = nchild ? xmalloc(sizeof(Node *) * (size_t)nchild) : NULL;
 

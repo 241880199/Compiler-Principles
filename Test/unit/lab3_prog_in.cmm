@@ -2,7 +2,7 @@ int sum(int a, int b)
 {
     int t;
     t = a;
-    if (t)
+    if (a > b)
     {
         t = t + b;
     }
@@ -10,7 +10,7 @@ int sum(int a, int b)
     {
         t = t - b;
     }
-    while (t)
+    while (t <= b)
     {
         t = t - 1;
     }

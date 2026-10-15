@@ -22,6 +22,13 @@ typedef struct Node {
     const char   *name;
     int           line;
     const char   *lexeme;
+    /* RELOP 运算符的源码文本（`< <= > >= == !=` 之一）。**刻意不放进 `lexeme`** ——
+     * 语法树输出要逐字节不变，而 `lexeme` 非 NULL 会让 printTree 多打 `": >"`：
+     * RELOP 结点的 lexeme 由 lexical.l 刻意发成 NULL，树里就是一行裸 `RELOP`，
+     * 凡是打语法树的既有回归（Test/sample + Test/err，逐字节 diff）都照此钉死。
+     * 翻译层要运算符文本（translateCond -> irRelopCode），故另开一个字段承载它；
+     * printNode **不读这个字段**，故它对语法树输出零影响。 */
+    const char   *opText;
     int           nchild;
     struct Node **child;
 } Node;

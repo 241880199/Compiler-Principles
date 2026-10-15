@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include "tree.h"
 #include "report.h"
+#include "util.h"
 #include "syntax.tab.h"
 
 /* 数字词素的十进制展开缓冲区。**不能小**：`%f` 把 `0.5e103`（附录 A 列出的合法
@@ -20,6 +21,22 @@ static int commentStart = 0;   /* 未闭合注释的起始行 */
 static int emit(int tok, const char *name, const char *lexeme) {
     curTokenLine = yylineno;
     yylval = newToken(name, yylineno, lexeme);
+    return tok;
+}
+
+/* 关系运算符（`== != <= >= < >`）专用：把**源码文本**填进结点的专用字段 opText，
+ * 而 lexeme 仍为 NULL —— 见 tree.h 里 opText 那一段注释。
+ *
+ * ★ 为什么不能直接写 `emit(RELOP, "RELOP", text)`：那会把文本塞进 lexeme，
+ *   printNode 于是打出 `RELOP: >`，而凡是打语法树的既有回归（Test/sample + Test/err，
+ *   逐字节 diff）里都是**裸 `RELOP`** —— 语法树输出一变，那一批当场全红。
+ *   翻译层要的只是文本，故单开一个**不进语法树输出**的字段承载它。
+ *
+ * text 指向 flex 的复用缓冲区（yytext）或字符串字面量，故必须 xstrdup —— 与 emit
+ * 里对 lexeme 的处理一致。 */
+static int emitRelop(const char *text) {
+    int tok = emit(RELOP, "RELOP", NULL);   /* lexeme 保持 NULL：语法树输出不变 */
+    yylval->opText = xstrdup(text);
     return tok;
 }
 
@@ -112,12 +129,12 @@ FBASE   ({DIGIT}+\.{DIGIT}*|\.{DIGIT}+)
     /* ── 运算符与定界符（长符号必须先于短符号） ───────── */
 "&&"                    { return emit(AND,      "AND",      NULL); }
 "||"                    { return emit(OR,       "OR",       NULL); }
-"=="                    { return emit(RELOP,    "RELOP",    NULL); }
-"!="                    { return emit(RELOP,    "RELOP",    NULL); }
-"<="                    { return emit(RELOP,    "RELOP",    NULL); }
-">="                    { return emit(RELOP,    "RELOP",    NULL); }
-"<"                     { return emit(RELOP,    "RELOP",    NULL); }
-">"                     { return emit(RELOP,    "RELOP",    NULL); }
+"=="                    { return emitRelop(yytext); }
+"!="                    { return emitRelop(yytext); }
+"<="                    { return emitRelop(yytext); }
+">="                    { return emitRelop(yytext); }
+"<"                     { return emitRelop(yytext); }
+">"                     { return emitRelop(yytext); }
 "="                     { return emit(ASSIGNOP, "ASSIGNOP", NULL); }
 "+"                     { return emit(PLUS,     "PLUS",     NULL); }
 "-"                     { return emit(MINUS,    "MINUS",    NULL); }
