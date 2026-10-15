@@ -26,8 +26,23 @@ typedef enum { ST_EXP, ST_COMPST, ST_RETURN, ST_IF, ST_IFELSE, ST_WHILE } StmtKi
 StmtKind classifyStmt(Node *s);
 
 /* 翻译整棵语法树，返回 IR 链表（带哨兵的循环链表，见 ir.h）。
- * 本轮尚未接上驱动：src/main.c 要到 Task 12 才调用它。 */
+ * 本轮尚未接上驱动：src/main.c 要到 Task 12 才调用它 —— 故它的判据是
+ * Test/unit/test_translate_prog.c（`make prog-test`），而不是端到端。 */
 InterCodeList *translateProgram(Node *root);
+
+/* ── 语句 / 复合语句 / 函数定义（Task 10）────────────────────────────────────
+ * 全部沿用 translateExp/translateCond 的协议：返回"新增 IR 挂在传入 tail 之后的新尾"。
+ * 形状判别交给 classifyStmt（本层唯一"读懂结构"的地方），故这里的入口都只接
+ * "已知形状"的结点 —— 调用方（translateProgram 与彼此）负责给出对的那个孩子。
+ *
+ * ⚠️ `syntax.y` 里的列表是**右递归**的（`StmtList : Stmt StmtList`、`DefList : Def DefList`、
+ * `DecList : Dec COMMA DecList`、`ExtDefList : ExtDef ExtDefList`），故这些函数的
+ * `child[0]` 是本层元素、`child[1]`/`child[2]` 是**余下的同类列表**，必须递归下去。 */
+InterCodeList *translateStmt(InterCodeList *tail, Node *s);
+InterCodeList *translateCompSt(InterCodeList *tail, Node *c);
+InterCodeList *translateStmtList(InterCodeList *tail, Node *l);
+InterCodeList *translateDefList(InterCodeList *tail, Node *l);
+InterCodeList *translateExtDef(InterCodeList *tail, Node *e);
 
 /* ── 表达式翻译（Task 8）──────────────────────────────────────────────────
  * `place` 是**继承属性**：调用方告诉本函数"把值算到哪个操作数里"，而不是让它

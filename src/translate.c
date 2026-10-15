@@ -1,5 +1,6 @@
-/* AST -> IR。本文件当前含**形状判别表**、**表达式翻译**与 translateProgram 的骨架；
- * 语句/函数/程序级的翻译函数在后续任务里逐条加上来。
+/* AST -> IR。本文件当前含**形状判别表**、**表达式翻译**、**条件翻译**、
+ * **语句/复合语句/函数定义翻译**（Task 10）；此后 translateProgram 已是真实现
+ * （遍历 Program -> ExtDefList），只差 Task 12 把 src/main.c 接上来。
  *
  * 判别表放在这里而不是散在各翻译函数里：它是整层唯一"读懂语法树结构"的地方，
  * 判错时错的是整棵树的语义，且生成的 IR 往往"看着挺像那么回事"——
@@ -550,10 +551,267 @@ InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *pl
     return tail;
 }
 
-/* 骨架：翻译层的入口。修完后续任务后，这里会遍历 Program -> ExtDefList 生成 IR。
- * 现在返回空表（哨兵）而不是 NULL —— 下游一律按"带哨兵的循环链表"处理，
- * NULL 会让 irAppend/printIR 在多处需要特判。 */
+/* ══ 语句 / 复合语句 / 函数定义（Task 10）════════════════════════════════════
+ *
+ * 指导书表 3 的六条语句模板逐条落在 translateStmt 的 switch 里。`label_true` /
+ * `label_false` 由**这里**当场备好（`newLabelName()`）再作继承属性传给 translateCond ——
+ * 那是 Task 9"不做回填"在调用方一侧的对应物：标号在生成跳转之前就已在手上，
+ * 故不需要待填链、也不需要第二遍回扫。标号的**摆放**（`[LABEL l1]` 摆在哪一段之前）
+ * 是这几条模板的全部内容：摆错位置生成的 IR 照样"看着挺像那么回事"，只是跑不对。
+ *
+ * ── ★ 本任务唯一的一处实质偏离：列表是**右递归**的，不能"遍历全部孩子" ──────
+ * brief 里 `translateStmtList` / `translateDefList` / `translateDecList` /
+ * `translateProgram` 的内嵌代码都写成"遍历该结点的**全部**孩子"，而 src/syntax.y 里
+ * 这四个列表**全部右递归**：
+ *     StmtList : Stmt StmtList | ε        DefList : Def DefList | ε
+ *     DecList  : Dec COMMA DecList | Dec  ExtDefList : ExtDef ExtDefList | ε
+ * ⇒ `child[nchild-1]`（DecList 是 `child[2]`）是**同类的子列表结点**，不是本层元素。
+ * 照抄那个循环会得到（逐条实测，见 .superpowers/sdd/lab3/task-10-report.md §5）：
+ *   · translateStmtList 把子列表送进 translateStmt ⇒ classifyStmt 见 nchild==2 且
+ *     child[0] 是语法结点 ⇒ 判成 ST_EXP ⇒ classifyExp 落 bad ⇒ **abort**
+ *     —— **任何非空函数体**的第一条语句之后当场死；
+ *   · translateDefList 对子列表取 `child[1]`，而空 DefList 的 `child` 是 **NULL**
+ *     ⇒ **空指针解引用**（段错误：安静、难查，且与本仓库"响亮失败"的纪律正相反）；
+ *   · translateProgram 那个循环里 translateExtDef 对子列表走"nchild != 3 ⇒ 跳过"
+ *     ⇒ **只有第一个函数**被翻译出来（多函数输入悄悄少一半）。
+ * 故本文件按**右递归**逐层下降：`child[0]` 是本层元素、`child[1]`（DecList 的 `child[2]`）
+ * 是余下的列表。**每条产出的 IR 与 brief 逐字一致** —— 偏离只在"怎么走到列表的下一个元素"。
+ *
+ * 取值前一律先判形状：本层判错的后果是**越界读 / 空指针解引用**（安静地错），
+ * 而不是本仓库要求的响亮 abort，故每个取值点前都有 shapeError 这道闸。
+ */
+
+/* 形状与语法树不符时的**响亮失败**（本层统一的失败形态，与 classifyExp/classifyStmt
+ * 的 bad 标签、notImplemented、irRelopCode 的表外文本同一套）。
+ * 为什么值得每个判别点都挂一个：形状判错时生成的 IR 往往"看着挺像那么回事"，
+ * 端到端（parser + 真机 + .exp）测不出来；而越界读/空指针解引用是**安静的**崩溃。 */
+static void shapeError(const char *what, Node *n) {
+    fprintf(stderr, "internal error: %s 的形状与语法树不符（nchild=%d）at line %d\n",
+            what, n ? n->nchild : -1, n ? nodeLine(n) : 0);
+    abort();
+}
+
+/* VarDec 的**最内层**名字：`VarDec : ID` 或 `VarDec : VarDec LB INT RB`。
+ * brief 的说法是"沿 child[0] 下行到只有一个孩子的结点"——这里显式写成"前进到不再是
+ * 四孩子的 VarDec 为止"，语义相同而少一次越界机会。形状不对时响亮失败：
+ * 返回 NULL 会让调用方把 NULL 当名字用（xstrdup(NULL) 当场段错误，安静地崩）。 */
+static const char *leafIdName(Node *vd) {
+    while (vd != NULL && vd->nchild == 4) {
+        if (vd->child[0] == NULL || vd->child[0]->type != NT_VARDEC) break;
+        vd = vd->child[0];
+    }
+    if (vd == NULL || vd->nchild != 1 || vd->child[0] == NULL ||
+        vd->child[0]->kind != NODE_TOKEN)
+        shapeError("VarDec", vd);
+    return vd->child[0]->lexeme;
+}
+
+/* VarDec 的**声明**部分。
+ * ★ 本任务**只做登记**（`varNameOf`）：登记顺序 = 书写顺序，这正是 IR 里的编号与源码
+ * 顺序一致的原因，也是要求书 4.1.6 样例 2 里 `fact` 的形参拿到 v1、main 的
+ * `int m, result;` 拿到 v2/v3 的原因（v 号不是"用到时候"才发的）。
+ * ★ 数组的 `DEC v size` 与地址计算属 **Task 11**（要 collectDims/arrayTotalSize），
+ * 本任务**不**发 DEC，也不做半个 —— 半成品的 DEC 会算出错的地址，端到端只是"结果不对"。 */
+static InterCodeList *translateVarDec(InterCodeList *tail, Node *vd) {
+    (void)varNameOf(leafIdName(vd));
+    return tail;
+}
+
+/* DecList : Dec | Dec COMMA DecList —— 右递归（余下的列表在 child[2]，隔着一个 COMMA）。 */
+static InterCodeList *translateDecList(InterCodeList *tail, Node *dl) {
+    Node *dec;
+    if (dl == NULL || (dl->nchild != 1 && dl->nchild != 3)) shapeError("DecList", dl);
+    dec = dl->child[0];                          /* Dec : VarDec | VarDec ASSIGNOP Exp */
+    if (dec == NULL || dec->type != NT_DEC ||
+        (dec->nchild != 1 && dec->nchild != 3)) shapeError("Dec", dec);
+    tail = translateVarDec(tail, dec->child[0]);
+    if (dec->nchild == 3)
+        /* 初值**直接算进被声明的变量**（place 作继承属性）：`int x = 5;` 只出一条
+         * `v := #5`，不是"先落临时变量再搬过来"两条。 */
+        tail = translateExp(tail, dec->child[2],
+                            opVar(varNameOf(leafIdName(dec->child[0]))), NULL);
+    if (dl->nchild == 3) tail = translateDecList(tail, dl->child[2]);
+    return tail;
+}
+
+/* DefList : Def DefList | ε —— 右递归。 */
+InterCodeList *translateDefList(InterCodeList *tail, Node *l) {
+    Node *d;
+    if (l == NULL) shapeError("DefList", l);
+    if (l->nchild == 0) return tail;             /* ε */
+    if (l->nchild != 2) shapeError("DefList", l);
+    d = l->child[0];                             /* Def : Specifier DecList SEMI */
+    /* `Def : error` 的 child 数为 1，且 $1 是 error 伪符号（语义值可能为 NULL）。
+     * 假设 7（无语法错误）保证不出现；真出现了就响亮失败，绝不静默翻过去。 */
+    if (d == NULL || d->type != NT_DEF || d->nchild != 3) shapeError("Def", d);
+    tail = translateDecList(tail, d->child[1]);
+    return translateDefList(tail, l->child[1]);
+}
+
+/* StmtList : Stmt StmtList | ε —— 右递归。 */
+InterCodeList *translateStmtList(InterCodeList *tail, Node *l) {
+    if (l == NULL) shapeError("StmtList", l);
+    if (l->nchild == 0) return tail;             /* ε */
+    if (l->nchild != 2) shapeError("StmtList", l);
+    tail = translateStmt(tail, l->child[0]);
+    return translateStmtList(tail, l->child[1]);
+}
+
+/* 指导书表 3 的六条语句模板。形状判别由 classifyStmt 负责（本层唯一"读懂结构"的地方），
+ * 这里不再自行猜孩子位置 —— 两个子任务各判一半的话，判错时没人说得清错在哪一层。
+ * `Stmt : CompSt`、`IF`、`IF-ELSE`、`WHILE` 的孩子位置见 src/syntax.y。 */
+InterCodeList *translateStmt(InterCodeList *tail, Node *s) {
+    switch (classifyStmt(s)) {
+    case ST_EXP:
+        /* 表达式语句：值不被需要（place = NULL），但**照常翻译** —— 里面有副作用。 */
+        return translateExp(tail, s->child[0], NULL, NULL);
+
+    case ST_COMPST:
+        return translateCompSt(tail, s->child[0]);
+
+    case ST_RETURN: {
+        /* 先把返回值算进一个临时变量，再 `RETURN 它`。
+         * （要求书 4.1.6 样例 2 里 `return 0;` 对应的 `RETURN #0` 是这条的**优化形态**；
+         *   把常量直接内联进 RETURN 属 Task 16 起的优化 pass，本任务不做。） */
+        Operand t = opVar(newTempName());
+        InterCode *c;
+        tail = translateExp(tail, s->child[1], t, NULL);
+        c = newCode(IR_RETURN); c->u.one.x = t;
+        return irAppend(tail, c);
+    }
+
+    case ST_IF: {
+        /* 条件假时跳 l2；真时**落进** l1 ⇒ `LABEL l1` 摆在语句体之前。 */
+        char *l1 = newLabelName(), *l2 = newLabelName();
+        tail = translateCond(tail, s->child[2], l1, l2);
+        tail = appendLabel(tail, l1);
+        tail = translateStmt(tail, s->child[4]);
+        tail = appendLabel(tail, l2);
+        return tail;
+    }
+
+    case ST_IFELSE: {
+        /* l3 是 then 分支末尾跳过 else 的出口：**没有它两个分支会连成一串都执行**。 */
+        char *l1 = newLabelName(), *l2 = newLabelName(), *l3 = newLabelName();
+        tail = translateCond(tail, s->child[2], l1, l2);
+        tail = appendLabel(tail, l1);
+        tail = translateStmt(tail, s->child[4]);
+        tail = appendGoto(tail, l3);
+        tail = appendLabel(tail, l2);
+        tail = translateStmt(tail, s->child[6]);
+        tail = appendLabel(tail, l3);
+        return tail;
+    }
+
+    case ST_WHILE: {
+        /* `LABEL l1`（回跳目标）在**条件之前**：每条循环回边都从条件重新判起。
+         * 删掉末尾那条 `GOTO l1` 循环就只跑一遍 —— Test/unit/test_translate_prog.c
+         * 的判别力自证拿的正是这一条（见 task-10-report.md §6）。 */
+        char *l1 = newLabelName(), *l2 = newLabelName(), *l3 = newLabelName();
+        tail = appendLabel(tail, l1);
+        tail = translateCond(tail, s->child[2], l2, l3);
+        tail = appendLabel(tail, l2);
+        tail = translateStmt(tail, s->child[4]);
+        tail = appendGoto(tail, l1);
+        tail = appendLabel(tail, l3);
+        return tail;
+    }
+    }
+    /* 六个 kind 都已 return；这一行只为让"所有路径都有返回值"对读者与编译器都显式。 */
+    return tail;
+}
+
+/* CompSt : LC DefList StmtList RC —— child[0]=LC, 1=DefList, 2=StmtList, 3=RC。
+ * 局部定义先于语句翻译：登记顺序（v 号）因此与书写顺序一致。 */
+InterCodeList *translateCompSt(InterCodeList *tail, Node *c) {
+    if (c == NULL || c->nchild != 4) shapeError("CompSt", c);
+    tail = translateDefList(tail, c->child[1]);
+    return translateStmtList(tail, c->child[2]);
+}
+
+/* VarList : ParamDec COMMA VarList | ParamDec（都是右递归）。
+ * ★ **按形参声明顺序**发 PARAM。逆序的是**实参**（ARG），那是 Task 11 的事：
+ * 虚拟机 ARG 压栈、PARAM 弹栈（spec §3.4），故 ARG 的顺序必须与 PARAM 相反。
+ * 要求书 4.1.6 样例 2 的 `fact(n-1)` 只有一个实参、看不出顺序，**别把这条当"无所谓"**：
+ * 一旦这里也逆序，两个错误会互相抵消一部分，症状只在多形参函数上出现。 */
+static InterCodeList *translateVarListAsParams(InterCodeList *tail, Node *vl) {
+    Node *pd;                                    /* ParamDec : Specifier VarDec */
+    InterCode *c;
+    if (vl == NULL || (vl->nchild != 1 && vl->nchild != 3)) shapeError("VarList", vl);
+    pd = vl->child[0];
+    if (pd == NULL || pd->type != NT_PARAMDEC || pd->nchild != 2) shapeError("ParamDec", pd);
+    c = newCode(IR_PARAM);
+    c->u.one.x = opVar(varNameOf(leafIdName(pd->child[1])));
+    tail = irAppend(tail, c);
+    if (vl->nchild == 3) tail = translateVarListAsParams(tail, vl->child[2]);
+    return tail;
+}
+
+/* ExtDefList : ExtDef ExtDefList | ε —— 右递归（**多函数输入全靠这条递归**：
+ * 只翻第一个的话，第二个函数在 IR 里根本不存在，端到端只会看到"结果不对"）。 */
+static InterCodeList *translateExtDefList(InterCodeList *tail, Node *l) {
+    if (l == NULL) shapeError("ExtDefList", l);
+    if (l->nchild == 0) return tail;             /* ε */
+    if (l->nchild != 2) shapeError("ExtDefList", l);
+    tail = translateExtDef(tail, l->child[0]);
+    return translateExtDefList(tail, l->child[1]);
+}
+
+/* ExtDef 的**五种**形态靠孩子结构区分（依据 src/syntax.y 的 5 条 ExtDef 产生式）：
+ *   [Specifier, FunDec, CompSt]    函数定义 —— ★ 本任务唯一处理的形态
+ *   [Specifier, ExtDecList, SEMI]  全局变量 —— 假设 4（无全局变量）保证不出现 ⇒ 跳过
+ *   [Specifier, FunDec, SEMI]      函数声明 —— 假设 6（无函数声明）保证不出现 ⇒ 跳过
+ *   [Specifier, SEMI]              结构体定义 —— 本实验不涉及 ⇒ 跳过
+ *   [error, SEMI]                  错误恢复 —— 假设 7（无语法错误）保证不出现 ⇒ 跳过
+ * ★ 这四种"跳过"的形态都是**认得出来的**（不是"未知形状"），故不响亮失败：它们在
+ * 本实验的输入里按假设不可能出现，且跳过**是安全的** —— 全局变量/声明若真出现，
+ * 它在 IR 里就没有定义处，虚拟机会当场报错，而不是静默算出一个错结果。
+ * ★ 但**绝不能**"兜底当函数定义"：那会把 `e->child[2]`（SEMI 终结符或别的结点）当
+ * CompSt 翻下去，产出一份看着挺像那么回事的错 IR。故三条判别式一个都不省。
+ * 形状上要留神：`Specifier FunDec SEMI` 与 `Specifier FunDec CompSt` **孩子数相同**，
+ * `Specifier SEMI` 与 `Specifier ExtDecList SEMI` 前两个孩子同形 ——
+ * 只有 `child[1]->type == NT_FUNDEC && child[2]->type == NT_COMPST` 这对合取能定案。 */
+InterCodeList *translateExtDef(InterCodeList *tail, Node *e) {
+    Node *fd;
+    const char *fname;
+    if (e == NULL) shapeError("ExtDef", e);
+    if (e->nchild != 3) return tail;                     /* [Specifier,SEMI] / [error,SEMI] */
+    if (e->child[1] == NULL || e->child[1]->type != NT_FUNDEC) return tail;   /* 全局变量 */
+    if (e->child[2] == NULL || e->child[2]->type != NT_COMPST) return tail;   /* 函数声明 */
+
+    fd = e->child[1];                                    /* FunDec : ID LP [VarList] RP */
+    if (fd->child[0] == NULL || fd->child[0]->kind != NODE_TOKEN) shapeError("FunDec", fd);
+    fname = fd->child[0]->lexeme;
+
+    { InterCode *c = newCode(IR_FUNCTION); c->u.one.x = opFunc(fname);
+      tail = irAppend(tail, c); }
+
+    /* 形参：按声明顺序发 PARAM。`FunDec : ID LP RP`（无参）时 child[2] 是 RP，
+     * 故只在 nchild == 4 时走进去，且进去前确认它真是 VarList。 */
+    if (fd->nchild == 4) {
+        if (fd->child[2] == NULL || fd->child[2]->type != NT_VARLIST) shapeError("FunDec", fd);
+        tail = translateVarListAsParams(tail, fd->child[2]);
+    } else if (fd->nchild != 3) {
+        shapeError("FunDec", fd);
+    }
+
+    tail = translateCompSt(tail, e->child[2]);
+    return tail;
+}
+
+/* 翻译层的入口：遍历 Program -> ExtDefList 生成整个程序的 IR。
+ * 返回**带哨兵的循环链表**（空程序也是 irList() 而不是 NULL —— 下游一律按循环链表处理，
+ * NULL 会让 irAppend/printIR 在多处需要特判）。
+ * `translateResetNames()` 放这里（brief 如此）：编号从 1 起，与要求书样例的编号一致；
+ * 真实编译流程只调一次，表是空的，循环不做事。
+ * ★ **本轮仍无调用方** —— src/main.c 要到 Task 12 才调它。故本任务的判据是
+ * Test/unit/test_translate_prog.c（`make prog-test`：真 lexer/parser + 逐字节比对），
+ * 不是端到端（端到端此刻只会看到"parser 不产出 IR"）。 */
 InterCodeList *translateProgram(Node *root) {
-    (void)root;
-    return irList();
+    InterCodeList *t = irList();
+    translateResetNames();
+    if (root == NULL || root->type != NT_PROGRAM || root->nchild != 1)
+        shapeError("Program", root);
+    t = translateExtDefList(t, root->child[0]);          /* Program : ExtDefList */
+    return t;
 }

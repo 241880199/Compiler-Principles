@@ -194,6 +194,36 @@ cond-test: Test/unit/test_cond
 	@bash -o pipefail -c './Test/unit/test_cond | diff -u Test/unit/cond_expected.txt -' \
 	    && echo "PASS cond"
 
+# 程序级翻译单测（Task 10）：**用仓库里真正的 lexer/parser** 解析一段 .cmm 拿到 AST，
+# 调 translateProgram，再把 printIR 的输出与实测钉住的期望逐字节比对。
+#
+# 它存在的理由（协调者加的要求，计划里没有）：Task 12 之前 `translateProgram` 没有调用方
+# ⇒ Task 10 写下的语句 / 复合语句 / 函数翻译在端到端跑通之前**没有任何判据**，
+# 而 "判据对但没人在跑" 正是本项目反复栽过的失效（Task 8 审查刚抓到一次）。
+# brief 里本任务的验收（用 c_oracle.py 生成 fact.cmm 的 .exp）**不经过我们的编译器**，
+# 故它一个字都证明不了本单测的被测对象。
+#
+# 链接行照 test_lexer（真 lexer/parser）+ translate.c/ir.c（被测模块与它的唯一依赖）；
+# main 由测试文件自己提供。
+# 输入 Test/unit/lab3_prog_in.cmm **刻意避开本任务尚未实现的能力**：
+# 函数调用 / read / write / 数组下标都是 Task 11 的桩，走到就 abort。
+#
+# ★ 该夹具**不含关系运算**（条件写成裸变量 / `!x`），原因已披露在
+# Test/unit/test_translate_prog.c 顶部：RELOP 的操作符文本没进 AST
+# （src/lexical.l 发 RELOP 时 lexeme=NULL），`if (a > b)` 会让 translateCond
+# 响亮 abort（`unknown relop "(null)"`，退出码 134）。那是 Task 9 交付件的缺陷、
+# 修它要动不得改动的 src/lexical.l，见 .superpowers/sdd/lab3/task-10-report.md §7。
+# **修好后应把关系条件加回本夹具。**
+Test/unit/test_translate_prog: Test/unit/test_translate_prog.c lex.yy.c syntax.tab.c \
+                               src/tree.c src/report.c src/util.c src/translate.c src/ir.c \
+                               src/tree.h src/report.h src/util.h src/translate.h src/ir.h
+	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_translate_prog.c lex.yy.c syntax.tab.c \
+	      src/tree.c src/report.c src/util.c src/translate.c src/ir.c -lfl
+
+prog-test: Test/unit/test_translate_prog
+	@bash -o pipefail -c './Test/unit/test_translate_prog < Test/unit/lab3_prog_in.cmm | diff -u Test/unit/translate_prog_expected.txt -' \
+	    && echo "PASS translate-prog"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -205,11 +235,11 @@ cond-test: Test/unit/test_cond
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test expkind-test translate-test cond-test
+        ir-abort-test expkind-test translate-test cond-test prog-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
 	      Test/unit/test_ir Test/unit/test_ir_abort Test/unit/test_expkind \
-	      Test/unit/test_translate Test/unit/test_cond \
+	      Test/unit/test_translate Test/unit/test_cond Test/unit/test_translate_prog \
 	      Test/regress/driver Test/regress/*.o
