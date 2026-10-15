@@ -1,0 +1,4 @@
+FUNCTION main :
+p := #1048576
+*p := #1
+RETURN #0

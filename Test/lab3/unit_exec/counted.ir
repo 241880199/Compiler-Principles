@@ -1,0 +1,4 @@
+FUNCTION main :
+GOTO label1
+LABEL label1 :
+RETURN #0

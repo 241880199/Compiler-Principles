@@ -1,0 +1,6 @@
+FUNCTION main :
+a := #0 - #7
+b := #2
+c := a / b
+WRITE c
+RETURN #0

@@ -1,0 +1,12 @@
+FUNCTION main :
+ARG #2
+ARG #1
+r := CALL f
+WRITE r
+RETURN #0
+FUNCTION f :
+PARAM p
+PARAM q
+s := p * #10
+t := s + q
+RETURN t

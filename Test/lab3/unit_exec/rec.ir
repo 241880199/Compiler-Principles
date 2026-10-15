@@ -1,0 +1,18 @@
+FUNCTION main :
+t1 := #5
+ARG t1
+result := CALL fact
+WRITE result
+RETURN #0
+FUNCTION fact :
+PARAM n
+IF n <= #1 GOTO base
+GOTO rec
+LABEL base :
+RETURN #1
+LABEL rec :
+arg := n - #1
+ARG arg
+sub := CALL fact
+m := n * sub
+RETURN m

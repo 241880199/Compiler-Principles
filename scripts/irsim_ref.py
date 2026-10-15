@@ -163,3 +163,163 @@ def label_check(p):
             raise UndefinedLabelError(c[4])
         if c[0] == "CALL" and c[2] not in p.labels:
             raise UndefinedLabelError(c[2])
+
+
+# ============================================================================
+#  执行引擎（设计文档 §3）
+# ============================================================================
+
+class Result:
+    def __init__(self):
+        self.outputs = []
+        self.instr_cnt = 0
+        self.status = "ok"       # 'ok' | 'memory' | 'pc'
+
+
+MEM_WORDS = 262144               # 262144 个字 = 1 MiB，地址按字节计（§3.5）
+
+
+class _State:
+    def __init__(self, p, inputs):
+        self.p = p
+        self.inputs = inputs
+        self.mem = [0] * MEM_WORDS
+        self.symtab = {k: list(v) for k, v in p.symtab.items()}
+        self.call_stack = []          # (ip, funcname, old_addrs, old_offset)
+        self.arg_stack = []
+        self.offset = p.offset
+        self.instr_cnt = 0
+        self.result = Result()
+
+    # ---- 取值（spec §3.3） ----
+    def get_value(self, var):
+        if var[0] == "#":
+            return int(var[1:])
+        if var[0] == "&":
+            return self.symtab[var[1:]][0]
+        if var[0] == "*":
+            return self.mem[self.mem[self.symtab[var[1:]][0] // 4] // 4]
+        return self.mem[self.symtab[var][0] // 4]
+
+    def store_var(self, var, value):
+        if var[0] == "*":
+            self.mem[self.mem[self.symtab[var[1:]][0] // 4] // 4] = value
+        else:
+            self.mem[self.symtab[var][0] // 4] = value
+
+    def new_addr(self, size):
+        a = self.offset
+        self.offset += size
+        return a
+
+
+def _execute(st, trace):
+    p = st.p
+    ip = p.entry
+    while ip >= 0:
+        if ip >= len(p.codes):
+            st.result.status = "pc"
+            return
+        code = p.codes[ip]
+        st.instr_cnt += 1
+        if trace:
+            print("%4d  %-40s  ip=%d" % (st.instr_cnt, code, ip), file=sys.stderr)
+        try:
+            nxt = _step(st, code, ip)
+        except IndexError:
+            st.result.status = "memory"
+            return
+        if nxt is None:          # RETURN 且调用栈为空 => 正常结束
+            return
+        ip = nxt
+
+
+def _step(st, code, ip):
+    p = st.p
+    op = code[0]
+
+    if op == "LABEL":
+        return ip + 1
+    if op == "READ":
+        v = st.inputs.pop(0) if st.inputs else 0
+        st.store_var(code[1], v)
+        return ip + 1
+    if op == "WRITE":
+        st.result.outputs.append(st.get_value(code[1]))
+        return ip + 1
+    if op == "GOTO":
+        return p.labels[code[1]]
+    if op == "IF":
+        x, relop, y, z = code[1], code[2], code[3], code[4]
+        v1, v2 = st.get_value(x), st.get_value(y)
+        if _eval_relop(v1, relop, v2):
+            return p.labels[z]
+        return ip + 1
+    if op == "MOV":
+        st.store_var(code[1], st.get_value(code[2]))
+        return ip + 1
+    if op == "ARITH":
+        v1, v2 = st.get_value(code[2]), st.get_value(code[4])
+        st.store_var(code[1], _eval_arith(v1, code[3], v2))
+        return ip + 1
+    if op == "DEC":
+        return ip + 1
+    if op == "ARG":
+        st.arg_stack.append(st.get_value(code[1]))
+        return ip + 1
+    if op == "PARAM":
+        st.store_var(code[1], st.arg_stack.pop())
+        return ip + 1
+    if op == "CALL":
+        dst, fname = code[1], code[2]
+        old_addrs = {}
+        old_offset = st.offset
+        for k in p.funcs.get(fname, []):
+            old_addrs[k] = list(st.symtab[k])
+            st.symtab[k] = [st.new_addr(st.symtab[k][1]), st.symtab[k][1], st.symtab[k][2]]
+        st.call_stack.append((ip + 1, dst, old_addrs, old_offset))
+        return p.labels[fname]
+    if op == "RETURN":
+        if not st.call_stack:
+            return None
+        rv = st.get_value(code[1])
+        ret_ip, dst, old_addrs, old_offset = st.call_stack.pop()
+        for k, v in old_addrs.items():
+            st.symtab[k] = v
+        st.offset = old_offset
+        st.store_var(dst, rv)
+        return ret_ip
+    raise IRSyntaxError("unhandled %r" % (code,))
+
+
+def _eval_relop(a, relop, b):
+    if relop == ">":  return a > b
+    if relop == "<":  return a < b
+    if relop == ">=": return a >= b
+    if relop == "<=": return a <= b
+    if relop == "==": return a == b
+    if relop == "!=": return a != b
+    raise IRSyntaxError(relop)
+
+
+def _eval_arith(a, op, b):
+    # 与真实实现一致：装载期已把 '/' 改写为 '//'，故这里 Integer 除法向下取整
+    if op == "+":  return a + b
+    if op == "-":  return a - b
+    if op == "*":  return a * b
+    if op == "//": return a // b
+    raise IRSyntaxError(op)
+
+
+def run(path, inputs=(), trace=False):
+    """执行一份 .ir。
+
+    返回 `Result`（`.outputs` / `.instr_cnt` / `.status`）。
+    `status` 为 `'ok'`（RETURN 时调用栈已空 = 正常结束）、`'memory'`（越界）或
+    `'pc'`（ip 越过 codes 末尾 —— 说明 IR 没有正常的 RETURN 出口）。
+    """
+    p = load_ir(path)
+    st = _State(p, list(inputs))
+    _execute(st, trace)
+    st.result.instr_cnt = st.instr_cnt
+    return st.result
