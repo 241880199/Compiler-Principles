@@ -2,6 +2,12 @@
 
 语义逐条来自对 作业三/irsim.pyc（版本 2.0.2，编译于 2023-02-02）的字节码反解，
 与该设计文档 §3 一一对应。本文件**不依赖 PyQt、不依赖 Python 3.8**。
+
+**异常契约（调用方必读）**：语法错误抛 `IRSyntaxError`；但**操作数里的整数解析失败
+会原样漏出 `ValueError`**（例：`DEC a abc`、`#abc`）。
+这不是疏漏，而是**忠实**：真机 `sanity_check` 捕的正是 `(IRSyntaxError, ValueError)`。
+⇒ 调用方若只 `except IRSyntaxError` 会漏掉这一类；**不要"顺手修"成 `IRSyntaxError`**，
+测试 `test_int_parse_failure_leaks_valueerror` 专门钉住这条行为。
 """
 
 import sys
