@@ -12,30 +12,42 @@ t2 := t3 + t6
 t9 := v3
 t1 := t2 + t9
 RETURN t1
-FUNCTION main :
-READ v4
-t10 := v4
-WRITE t10
-t11 := #1
-t12 := #2
-t13 := #3
-ARG t13
-ARG t12
-ARG t11
-v5 := CALL f
+FUNCTION h :
+PARAM v4
+t11 := v4
+t12 := #10
+t10 := t11 * t12
+RETURN t10
+FUNCTION g :
+PARAM v5
 t14 := v5
-WRITE t14
-t16 := v4
-t18 := v4
-t19 := #1
-t17 := t18 + t19
-t21 := v4
-t22 := #2
-t20 := t21 + t22
-ARG t20
-ARG t17
-ARG t16
-t15 := CALL f
-WRITE t15
-t23 := #0
-RETURN t23
+t15 := #1
+t13 := t14 + t15
+RETURN t13
+FUNCTION main :
+READ t16
+READ v6
+WRITE v6
+ARG #3
+ARG #2
+ARG #1
+v7 := CALL f
+WRITE v7
+t19 := v6
+t20 := #1
+t18 := t19 + t20
+t22 := v6
+t23 := #2
+t21 := t22 + t23
+ARG t21
+ARG t18
+ARG v6
+t17 := CALL f
+WRITE t17
+ARG #1
+t24 := CALL h
+ARG t24
+v7 := CALL g
+WRITE v7
+t25 := #0
+RETURN t25

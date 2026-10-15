@@ -28,13 +28,12 @@ t14 := *t15
 t17 := &v1 + #8
 t16 := *t17
 v3 := t14 + t16
-t18 := v3
-WRITE t18
+WRITE v3
 v2 := #3
-t20 := v2
-t21 := t20 * #4
-t22 := &v1 + t21
-t19 := *t22
-WRITE t19
-t23 := #0
-RETURN t23
+t19 := v2
+t20 := t19 * #4
+t21 := &v1 + t20
+t18 := *t21
+WRITE t18
+t22 := #0
+RETURN t22

@@ -56,9 +56,13 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e);
  * 端到端一个字都察觉不到 —— 只有行数能分辨）。
  *
  * 返回为本表达式新增的 IR（挂在传入的 tail 之后）的**新尾**。
- * `placeIsAddr` 出参：该表达式可作**左值**（数组元素下标，`a[i]`）时置 1，
- * 否则置 0（Task 11 起 `Exp1[Exp2]` 会置 1；其余形状一律 0）。 */
-InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place, int *placeIsAddr);
+ *
+ * ★ 原先还有一个 `placeIsAddr` 出参（`Exp1[Exp2]` 置 1、其余形状置 0）。Task 11b
+ *   审查发现它**只写不读** —— 全仓库没有任何一处读它，左值路径自己在
+ *   `translateAssignToLValue` 里重算地址。留着一个没人读的出参，等于"文档承诺了
+ *   一条并不存在的契约"，故删掉。
+ *   高维 / 数组形参落地时（Task 13/14）若要复用它，再加回来。 */
+InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place);
 
 /* ── 条件翻译（Task 9）────────────────────────────────────────────────────
  * 按指导书表 4 的**短路**形式生成代码：条件成立跳 labelTrue，否则跳 labelFalse。

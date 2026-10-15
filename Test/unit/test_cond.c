@@ -253,7 +253,7 @@ int main(void) {
     translateResetNames();
     {
         InterCodeList *t = irList();
-        t = translateExp(t, mkAssign("x", mkNot(mkExp1("ID", "z"))), NULL, NULL);
+        t = translateExp(t, mkAssign("x", mkNot(mkExp1("ID", "z"))), NULL);
         expectIR(t,
                  "v1 := #0\n"
                  "t1 := v2\n"
@@ -270,7 +270,7 @@ int main(void) {
     {
         Node *rel = mkBin(mkExp1("ID", "n"), "RELOP", ">", mkExp1("INT", "0"));
         InterCodeList *t = irList();
-        t = translateExp(t, mkAssign("x", rel), NULL, NULL);
+        t = translateExp(t, mkAssign("x", rel), NULL);
         expectIR(t,
                  "v1 := #0\n"
                  "IF v2 > #0 GOTO label1\n"
@@ -288,7 +288,7 @@ int main(void) {
     {
         Node *rel = mkBin(mkExp1("ID", "n"), "RELOP", ">", mkExp1("INT", "0"));
         InterCodeList *t = irList();
-        t = translateExp(t, rel, NULL, NULL);
+        t = translateExp(t, rel, NULL);
         expectIR(t,
                  "IF v1 > #0 GOTO label1\n"
                  "GOTO label2\n"
@@ -312,7 +312,7 @@ int main(void) {
     translateResetNames();
     {
         InterCodeList *t = irList();
-        t = translateExp(t, mkAssign("x", mkNot(mkExp1("ID", "x"))), NULL, NULL);
+        t = translateExp(t, mkAssign("x", mkNot(mkExp1("ID", "x"))), NULL);
         expectIR(t,
                  "v1 := #0\n"
                  "t1 := v1\n"                 /* <- 读的是刚被清掉的 v1，不是旧值 */

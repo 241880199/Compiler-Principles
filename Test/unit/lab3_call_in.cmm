@@ -2,14 +2,25 @@ int f(int p, int q, int r)
 {
     return p * 100 + q * 10 + r;
 }
+int h(int x)
+{
+    return x * 10;
+}
+int g(int y)
+{
+    return y + 1;
+}
 int main()
 {
     int n;
     int res;
+    read();
     n = read();
     write(n);
     res = f(1, 2, 3);
     write(res);
     write(f(n, n + 1, n + 2));
+    res = g(h(1));
+    write(res);
     return 0;
 }

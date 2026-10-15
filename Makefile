@@ -256,6 +256,12 @@ prog-test: Test/unit/test_translate_prog
 #   · 把 translateArgs 的逆序改成正序 ⇒ 只有 call-test 红（ARG 顺序变了，值也随之变错）；
 #   · 去掉常量下标折叠               ⇒ 只有 arr-test 红（`&a + #8` 变成 `idx := i*4` 再相加）。
 #
+# ★ 中间件（IR 落盘处）**必须用 `mktemp`，不许写 `build/xxx.ir`**（Task 11b 审查修正）：
+#   `build/` 在 .gitignore 里，而本 Makefile **没有** `mkdir -p build`，
+#   ⇒ **fresh clone 上 `make call-test` 必红**（`cp -f … build/t11_call.ir` 因目录不存在
+#   失败）。好在那是**响亮**的红，不是静默绿；但同一 recipe 里另外三个临时件
+#   （out/err/got）本来就是 `mktemp`，照它们改成本最低、也不必再引入一个目录依赖。
+#
 # 每个目标第二段把生成的 IR **丢进参考机（scripts/irsim_ref.py）执行**，比对 WRITE 输出 ——
 # 证明逐字节钉住的那份 IR 不只是"我们的输出"，而是**语义正确**的。
 # 判据链上没有一处是我们的手抄：输入是真源码、IR 是真 parser+翻译层的产物、
@@ -264,7 +270,7 @@ prog-test: Test/unit/test_translate_prog
 call-test: Test/unit/test_translate_prog
 	@bash -c 'set -u; rc=0; \
 	    PY="$$(command -v python3 || command -v python)"; \
-	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=build/t11_call.ir; \
+	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=$$(mktemp); \
 	    ./Test/unit/test_translate_prog < Test/unit/lab3_call_in.cmm >$$out 2>$$err; prc=$$?; \
 	    if [ $$prc -ne 0 ]; then echo "FAIL call-test: 退出码 $$prc（yyparse 失败或内部 abort）"; rc=1; fi; \
 	    if [ -s $$err ]; then echo "FAIL call-test: stderr 非空（正常流程不得写 stderr）"; sed "s/^/      /" $$err | head -10; rc=1; fi; \
@@ -274,13 +280,13 @@ call-test: Test/unit/test_translate_prog
 	        echo "FAIL call-test: 参考机执行失败"; sed "s/^/      /" $$err | head -5; rc=1; fi; \
 	    tail -n +2 $$got > $$got.v; mv $$got.v $$got; \
 	    if ! diff -u Test/unit/lab3_call_out.txt $$got; then echo "FAIL call-test: 参考机 WRITE 输出与期望不符"; rc=1; fi; \
-	    rm -f $$out $$err $$got; \
+	    rm -f $$out $$err $$got $$ir; \
 	    if [ $$rc -eq 0 ]; then echo "PASS call-test"; fi; exit $$rc'
 
 arr-test: Test/unit/test_translate_prog
 	@bash -c 'set -u; rc=0; \
 	    PY="$$(command -v python3 || command -v python)"; \
-	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=build/t11_arr.ir; \
+	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=$$(mktemp); \
 	    ./Test/unit/test_translate_prog < Test/unit/lab3_arr_in.cmm >$$out 2>$$err; prc=$$?; \
 	    if [ $$prc -ne 0 ]; then echo "FAIL arr-test: 退出码 $$prc（yyparse 失败或内部 abort）"; rc=1; fi; \
 	    if [ -s $$err ]; then echo "FAIL arr-test: stderr 非空（正常流程不得写 stderr）"; sed "s/^/      /" $$err | head -10; rc=1; fi; \
@@ -290,7 +296,7 @@ arr-test: Test/unit/test_translate_prog
 	        echo "FAIL arr-test: 参考机执行失败"; sed "s/^/      /" $$err | head -5; rc=1; fi; \
 	    tail -n +2 $$got > $$got.v; mv $$got.v $$got; \
 	    if ! diff -u Test/unit/lab3_arr_out.txt $$got; then echo "FAIL arr-test: 参考机 WRITE 输出与期望不符"; rc=1; fi; \
-	    rm -f $$out $$err $$got; \
+	    rm -f $$out $$err $$got $$ir; \
 	    if [ $$rc -eq 0 ]; then echo "PASS arr-test"; fi; exit $$rc'
 
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；

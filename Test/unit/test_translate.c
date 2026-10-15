@@ -71,7 +71,7 @@ int main(void) {
      * （先算进临时变量再拷进 x），这里会多出一行 `t1 := #5`，diff 立刻变红。 */
     {
         InterCodeList *t = irList();
-        translateExp(t, mkAssign("x", newNode("Exp", 1, newToken("INT", 1, "5"))), NULL, NULL);
+        translateExp(t, mkAssign("x", newNode("Exp", 1, newToken("INT", 1, "5"))), NULL);
         printIR(stdout, t);
     }
 
@@ -80,7 +80,7 @@ int main(void) {
     {
         Node *rhs = newNode("Exp", 1, newToken("ID", 1, "y"));
         InterCodeList *t = irList();
-        translateExp(t, mkAssign("x", rhs), NULL, NULL);
+        translateExp(t, mkAssign("x", rhs), NULL);
         /* x -> v1（外层先登记），y -> v2 */
         expectIR(t, "v1 := v2\n", "x = y; 只产出一行 v1 := v2");
     }
@@ -91,7 +91,7 @@ int main(void) {
         Node *bin = newNode("Exp", 3, newNode("Exp", 1, newToken("INT", 1, "1")),
                             newToken("PLUS", 1, "+"), newNode("Exp", 1, newToken("INT", 1, "2")));
         InterCodeList *t = irList();
-        translateExp(t, mkAssign("x", bin), NULL, NULL);
+        translateExp(t, mkAssign("x", bin), NULL);
         expectIR(t, "t1 := #1\nt2 := #2\nv1 := t1 + t2\n", "x = 1 + 2;");
     }
 
@@ -101,7 +101,7 @@ int main(void) {
         Node *neg = newNode("Exp", 2, newToken("MINUS", 1, "-"),
                             newNode("Exp", 1, newToken("ID", 1, "y")));
         InterCodeList *t = irList();
-        translateExp(t, mkAssign("x", neg), NULL, NULL);
+        translateExp(t, mkAssign("x", neg), NULL);
         expectIR(t, "t1 := v2\nv1 := #0 - t1\n", "x = -y;");
     }
 
@@ -112,7 +112,7 @@ int main(void) {
     {
         Node *inner = mkAssign("x", newNode("Exp", 1, newToken("INT", 1, "5")));
         InterCodeList *t = irList();
-        translateExp(t, mkAssign("y", inner), NULL, NULL);
+        translateExp(t, mkAssign("y", inner), NULL);
         expectIR(t, "v2 := #5\nv1 := v2\n", "y = (x = 5);");
     }
 
@@ -123,7 +123,7 @@ int main(void) {
                               newNode("Exp", 1, newToken("INT", 1, "5")),
                               newToken("RP", 1, ")"));
         InterCodeList *t = irList();
-        translateExp(t, mkAssign("x", paren), NULL, NULL);
+        translateExp(t, mkAssign("x", paren), NULL);
         expectIR(t, "v1 := #5\n", "x = (5);");
     }
 
@@ -135,18 +135,24 @@ int main(void) {
         Node *bin = newNode("Exp", 3, newNode("Exp", 1, newToken("INT", 1, "1")),
                             newToken("PLUS", 1, "+"), newNode("Exp", 1, newToken("INT", 1, "2")));
         InterCodeList *t = irList();
-        translateExp(t, bin, NULL, NULL);
+        translateExp(t, bin, NULL);
         expectIR(t, "t1 := #1\nt2 := #2\n", "1 + 2;（值不被需要时两侧仍照常翻译）");
     }
 
-    /* ══ ⑧ placeIsAddr 出参：本任务一律置 0（Task 11 的数组元素左值才置 1） ══ */
+    /* ══ ⑧ 裸 `read();`（place == NULL）**必须照常发 READ**（Task 11b 审查修正） ══
+     * `READ` 的"消费一次输入"是**可观察副作用**，丢掉它会让**后续**的 read() 读到错的
+     * 那个数（实测：`read(); n = read(); write(n);` 输入 `5 7` ⇒ 丢失时输出 5、
+     * C 语义（scripts/c_oracle.py）输出 7）。原实现在 place 为 NULL 时直接 `return tail`、
+     * 一条 IR 都不产，注释还把它称作"无副作用的丢弃读" —— 那是假的。
+     * 这条钉住修好后的形态：值没人要 ⇒ 新造一个临时变量当目标，`READ t1` 照发。
+     * （原「⑧ placeIsAddr 出参」那条随该出参一并删除，见 translate.h 的说明。） */
     translateResetNames();
     {
-        int flag = 99;
+        Node *call = newNode("Exp", 3, newToken("ID", 1, "read"),
+                             newToken("LP", 1, "("), newToken("RP", 1, ")"));
         InterCodeList *t = irList();
-        translateExp(t, newNode("Exp", 1, newToken("ID", 1, "x")), NULL, &flag);
-        if (flag != 0) { fprintf(stderr, "FAIL placeIsAddr: got %d want 0\n", flag); failures++; }
-        else fprintf(stderr, "ok   placeIsAddr 置 0\n");
+        translateExp(t, call, NULL);
+        expectIR(t, "READ t1\n", "read();（值不被需要时仍必须发 READ）");
     }
 
     /* ══ ⑨ place == NULL 的一元取负：`-1;` —— 值不要，也不该为它产出任何 IR ══
@@ -159,7 +165,7 @@ int main(void) {
         Node *neg = newNode("Exp", 2, newToken("MINUS", 1, "-"),
                             newNode("Exp", 1, newToken("INT", 1, "1")));
         InterCodeList *t = irList();
-        translateExp(t, neg, NULL, NULL);
+        translateExp(t, neg, NULL);
         expectIR(t, "", "-1;（值不被需要时产出 0 行 IR）");
     }
 

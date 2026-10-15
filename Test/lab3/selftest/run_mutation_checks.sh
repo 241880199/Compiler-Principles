@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 关键变异的**判别力自证**（Task 10 审查修正时入库；Task 11 追加两条）。
+# 关键变异的**判别力自证**（Task 10 审查修正时入库；Task 11 追加两条；Task 11b 再加一条）。
 #
 #   bash Test/lab3/selftest/run_mutation_checks.sh     # 退出码 0 = 全部变异检查过
 #
@@ -8,6 +8,7 @@
 #   ② 去掉 ST_WHILE 的回跳 GOTO（src/translate.c）
 #   ③ Task 11：translateArgs 逆序改正序（应**恰好**打红 call-test）
 #   ④ Task 11：去掉常量下标折叠（应**恰好**打红 arr-test）
+#   ⑤ Task 11b：把裸 `read();` 又丢掉（应打红 call-test 与 translate-test）
 # ①② 原先只在 gitignore 的 build/ 下跑过（build/t10-mutate.sh、build/t10c_keymut*），
 # 不可复现 —— 等于"判据对改坏有判别力"这件事跟着报告走、不跟着判据走。这与
 # run_selftest.sh 入库的理由是同一个（那一次审查也发现上一轮的判别力证据不可复现）。
@@ -152,14 +153,14 @@ old = r'''    if (a->nchild == 3)
                 MAX_CALL_ARGS);
         abort();
     }
-    argList[(*n)++] = t->name;                                  /* ★ 本项排在它们之后 */
+    argList[(*n)++] = t;                                        /* ★ 本项排在它们之后 */
 '''
 new = r'''    if (*n >= MAX_CALL_ARGS) {
         fprintf(stderr, "internal error: 实参个数超过 %d（translateArgs 定长缓冲）\n",
                 MAX_CALL_ARGS);
         abort();
     }
-    argList[(*n)++] = t->name;   /* MUTATION(selftest): 本项先入列 = 正序 —— call-test 应变红 */
+    argList[(*n)++] = t;   /* MUTATION(selftest): 本项先入列 = 正序 —— call-test 应变红 */
     if (a->nchild == 3)
         tail = translateArgs(tail, a->child[2], argList, n);
 '''
@@ -197,6 +198,44 @@ assert_target "变异4：call-test 不受影响（仍绿）" call-test zero
 if end_mutation; then record 0 "变异4：src/translate.c 逐字节复原（sha256 一致）"
 else record 1 "变异4：src/translate.c 逐字节复原" "sha256 不一致"; fi
 assert_target "变异4：复原后 arr-test 复绿" arr-test zero
+
+# ══════════════════════════════════════════════════════════════════════════
+# 变异 5（Task 11b）：src/translate.c —— 把 translateCall0 的 read 分支退回
+#   "place 为 NULL 时直接 return tail"（即 Task 11 那版把裸 `read();` 整条丢掉）。
+#   预期：**call-test 变红**（夹具里 `read(); n = read(); write(n);` 输入 `5 7`：
+#   丢掉那次读 ⇒ n 变成 5、后面 `f(n,n+1,n+2)` 算成 567，而期望是按 C 语义钉的 7/789）；
+#   **translate-test 也变红**（单测 ⑧ 逐字节钉住 `read();` 必须产出 `READ t1`）；
+#   arr-test 不受影响（那条夹具里没有 read）。
+#   这条是第 1 条修正（"READ 的消费一次输入是可观察副作用"）的判别力守护。
+# ══════════════════════════════════════════════════════════════════════════
+echo "== 变异 5：裸 read() 又丢掉（src/translate.c）=="
+begin_mutation src/translate.c
+python3 - "$MUT_FILE" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+old = """        Operand dst = place ? place : opVar(newTempName());
+        InterCode *c = newCode(IR_READ);
+        c->u.one.x = dst;
+        return irAppend(tail, c);
+"""
+assert s.count(old) == 1, "期望恰好出现 1 次，实测 %d 次" % s.count(old)
+new = """        /* MUTATION(selftest): 退回"值没人要就不翻译"—— 应让 call-test 与 translate-test 变红 */
+        if (place) { InterCode *c = newCode(IR_READ); c->u.one.x = place;
+                     return irAppend(tail, c); }
+        return tail;
+"""
+open(p, "w", encoding="utf-8", newline="").write(s.replace(old, new))
+PY
+assert_target "变异5：变异后仍能编过（call 二进制）" Test/unit/test_translate_prog zero
+assert_target "变异5：变异后仍能编过（translate 单测二进制）" Test/unit/test_translate zero
+assert_target "变异5：call-test 变红（裸 read() 被丢）" call-test nonzero
+assert_target "变异5：translate-test 变红（单测 ⑧）" translate-test nonzero
+assert_target "变异5：arr-test 不受影响（仍绿）" arr-test zero
+if end_mutation; then record 0 "变异5：src/translate.c 逐字节复原（sha256 一致）"
+else record 1 "变异5：src/translate.c 逐字节复原" "sha256 不一致"; fi
+assert_target "变异5：复原后 call-test 复绿" call-test zero
+assert_target "变异5：复原后 translate-test 复绿" translate-test zero
 
 echo "----"
 echo "mutation-checks pass=$PASS fail=$FAIL"
