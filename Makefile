@@ -146,6 +146,21 @@ ir-abort-test: Test/unit/test_ir_abort
 	    echo "FAIL ir-abort: stderr 未含预期诊断：$$err"; exit 1; fi; \
 	echo "PASS ir-abort（退出码 $$st，诊断已出）"
 
+# AST 形状判别表单测：全项目唯一一个直接构造 Node 来钉"语法树长什么样"的用例。
+# 判别表一旦判错，错的是整棵树的语义，而错误的 IR 往往"看着挺像那么回事"，
+# 端到端（parser + 真机）测不出来，故必须有单测。
+# 链接翻译层本体（src/translate.c）而不是它的副本 —— 测的必须是真正要跑的那份
+# classifyExp/classifyStmt。translate.c 的 translateProgram 返回 irList()，
+# 故 src/ir.c 必须一起链（ir.c 依赖 util.c，已在链上）。
+Test/unit/test_expkind: Test/unit/test_expkind.c src/translate.c src/translate.h \
+                        src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_expkind.c src/translate.c src/tree.c src/util.c src/ir.c
+
+# 判据是**退出码**：本单测自己会统计 failures 并 return failures ? 1 : 0，
+# 提示写 stderr（故不能用上面那批「打印到 stdout 再整体 diff」的写法）。
+expkind-test: Test/unit/test_expkind
+	@bash -o pipefail -c './Test/unit/test_expkind' && echo "PASS expkind"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -157,10 +172,10 @@ ir-abort-test: Test/unit/test_ir_abort
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test
+        ir-abort-test expkind-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
-	      Test/unit/test_ir Test/unit/test_ir_abort \
+	      Test/unit/test_ir Test/unit/test_ir_abort Test/unit/test_expkind \
 	      Test/regress/driver Test/regress/*.o
