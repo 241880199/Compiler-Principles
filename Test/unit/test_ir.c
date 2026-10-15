@@ -21,6 +21,14 @@ int main(void) {
     c = newCode(IR_LABEL);    c->u.one.x = opLabel("label1");      emit(&t, c);
     c = newCode(IR_ARG);      c->u.one.x = opAddr("v1");           emit(&t, c);
     c = newCode(IR_CALL);     c->u.call.x = opVar("v5"); c->u.call.f = opFunc("f2"); emit(&t, c);
+    /* 补齐 19 种指令里剩下的 6 种（Task 6 审查修正）：少了它们，打印格式这层
+       地基就有 6 格没被钉住 —— 而那 6 格里"打错了但不为空"的行能骗过整套比对。 */
+    c = newCode(IR_SUB);      c->u.binop.x = opVar("v6"); c->u.binop.y = opVar("v2"); c->u.binop.z = opConst(1); emit(&t, c);
+    c = newCode(IR_MUL);      c->u.binop.x = opVar("v7"); c->u.binop.y = opVar("v3"); c->u.binop.z = opConst(2); emit(&t, c);
+    c = newCode(IR_DIV);      c->u.binop.x = opVar("v8"); c->u.binop.y = opVar("v7"); c->u.binop.z = opConst(2); emit(&t, c);
+    c = newCode(IR_PARAM);    c->u.one.x = opVar("v1");                            emit(&t, c);
+    c = newCode(IR_READ);     c->u.one.x = opVar("v1");                            emit(&t, c);
+    c = newCode(IR_WRITE);    c->u.one.x = opVar("v1");                            emit(&t, c);
     c = newCode(IR_RETURN);   c->u.one.x = opConst(0);             emit(&t, c);
 
     printIR(stdout, t);

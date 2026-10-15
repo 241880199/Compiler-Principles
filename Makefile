@@ -129,6 +129,23 @@ Test/unit/test_ir: Test/unit/test_ir.c src/ir.c src/ir.h src/util.c src/util.h
 ir-test: Test/unit/test_ir
 	@bash -o pipefail -c './Test/unit/test_ir | diff -u Test/unit/ir_expected.txt -' && echo "PASS ir"
 
+# 「响亮失败」用例（Task 6 审查修正第 2 条）：给 IR_ADDR 传 OP_ADDR 时必须 abort。
+# abort 带 SIGABRT 结束**整个进程**，故**必须**与上面那批「打印到 stdout 再整体 diff」
+# 的用例分开成一个独立可执行 —— 否则进程会中途崩掉，后面的用例一条都不跑，
+# 而 `| diff` 只看到被截断的输出，分不清是谁崩的。理由详见 test_ir_abort.c 顶部。
+# 通过判据 = 退出码非 0 **且** stderr 含诊断 —— 两条都要断言：只看退出码会让
+# "被别的信号杀掉"也蒙混过关，只看 stderr 文字则可能漏掉"其实没崩"。
+Test/unit/test_ir_abort: Test/unit/test_ir_abort.c src/ir.c src/ir.h src/util.c src/util.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_ir_abort.c src/ir.c src/util.c
+
+ir-abort-test: Test/unit/test_ir_abort
+	@exec 2>/dev/null; err=$$(./$< 2>&1 >/dev/null); st=$$?; \
+	if [ $$st -eq 0 ]; then \
+	    echo "FAIL ir-abort: 期望进程失败（abort），实测退出码 0"; exit 1; fi; \
+	if ! printf '%s' "$$err" | grep -qF 'would print "&&x"'; then \
+	    echo "FAIL ir-abort: stderr 未含预期诊断：$$err"; exit 1; fi; \
+	echo "PASS ir-abort（退出码 $$st，诊断已出）"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -139,10 +156,11 @@ ir-test: Test/unit/test_ir
 # 自检请直接：
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
-.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test
+.PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
+        ir-abort-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
-	      Test/unit/test_ir \
+	      Test/unit/test_ir Test/unit/test_ir_abort \
 	      Test/regress/driver Test/regress/*.o

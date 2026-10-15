@@ -124,6 +124,16 @@ void deleteCode(InterCodeList *c) {
  * ============================================================================ */
 
 static void printOperand(FILE *out, Operand o) {
+    /* ★ NULL 守卫：newCode 零初始化 ⇒ translate.c 若漏填某个操作数，这里拿到的是 NULL。
+     * 刻意**响亮失败**而非打占位串：一行"非空但错"的指令（如 `? := #0`）正是本项目
+     * 最怕的失效 —— 它能骗过整套打印比对、在真机上又是可执行但语义错的行。诊断 + abort
+     * 才能把"漏填"当场暴露成本模块的缺陷，而不是一个难查的下游症状。
+     * 合法输入的 o 恒非 NULL，故本守卫**不改变任何合法输出的字节**。 */
+    if (!o) {
+        fprintf(stderr, "internal error: printOperand got a NULL operand "
+                        "(a code generator forgot to fill an operand)\n");
+        abort();
+    }
     switch (o->kind) {
     case OP_VAR:   fputs(o->name, out); break;
     case OP_CONST: fprintf(out, "#%d", o->value); break;
@@ -145,6 +155,15 @@ void printIR(FILE *out, InterCodeList *any) {
             printOperand(out, c->u.assign.x); fprintf(out, " := ");
             printOperand(out, c->u.assign.y); fprintf(out, "\n"); break;
         case IR_ADDR:
+            /* ★ 堵 `&&x`：本条指令的 `&` 由**本函数**打印，故 y 必须是**裸名字**的
+             * OP_VAR。若 y 已是 OP_ADDR（它本身就渲染成 `&name`），会打出 `&&x` ——
+             * 真机语法错、参考机装载器也会拒（表现为"莫名装载失败"）。
+             * 响亮失败优于静默产出一行"非空但语义错"的指令（见 printOperand 的守卫说明）。 */
+            if (c->u.assign.y && c->u.assign.y->kind == OP_ADDR) {
+                fprintf(stderr, "internal error: IR_ADDR operand must be OP_VAR, not OP_ADDR "
+                                "(would print \"&&x\")\n");
+                abort();
+            }
             printOperand(out, c->u.assign.x); fprintf(out, " := &");
             printOperand(out, c->u.assign.y); fprintf(out, "\n"); break;
         case IR_ASSIGN_DEREF:

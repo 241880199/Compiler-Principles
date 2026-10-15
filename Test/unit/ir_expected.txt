@@ -10,4 +10,10 @@ GOTO label2
 LABEL label1 :
 ARG &v1
 v5 := CALL f2
+v6 := v2 - #1
+v7 := v3 * #2
+v8 := v7 / #2
+PARAM v1
+READ v1
+WRITE v1
 RETURN #0

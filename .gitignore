@@ -18,6 +18,7 @@ Test/unit/test_nodetype
 Test/unit/test_symtab
 Test/unit/test_report
 Test/unit/test_ir
+Test/unit/test_ir_abort
 Test/regress/driver
 
 # ── 编辑器 / 系统 ─────────────────────────────────────────────
