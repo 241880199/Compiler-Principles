@@ -72,8 +72,11 @@ int main(void) {
     check(symLookupLocal("only_inner") == NULL, "symLookupLocal 也查不到旧局部");
     scopeExit();
 
-    /* ── 全局列表 ── */
-    check(symGlobalList() != NULL, "symGlobalList 非空");
+    /* 历史上这里还有一条 `check(symGlobalList() != NULL, ...)` —— 2026-09-29
+     * 实验二砍掉选做 2.1/2.3（连同错误 18/19 的机制）时删掉了 symGlobalList，
+     * 测试文件没跟着改，于是 `make symtab-test` 一直链接失败而无人发现
+     * （run_tests.sh 不跑单测）。此处只摘掉那条已无对应实现的断言，
+     * 不重新实现该函数：它对应的功能是实验二主动放弃的。 */
 
     printf(failed ? "\nFAIL symtab\n" : "\nPASS symtab\n");
     return failed;
