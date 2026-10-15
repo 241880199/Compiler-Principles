@@ -36,3 +36,6 @@ __pycache__/
 *.out
 *.toc
 *.synctex.gz
+
+# ── 开发期暂存区（用户全局约定：仓内 build/ 是首选暂存位）──────
+build/
