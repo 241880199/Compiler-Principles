@@ -3,10 +3,9 @@
 #
 #   bash scripts/run_lab3.sh [<用例目录或单个 .cmm>]     # 默认 Test/lab3
 #
-# 本阶段（Task 12 之前）parser 还不会"把中间代码写到第二个参数指定的文件"，
-# 故本运行台**必须把两类失败分开报**，否则满屏同一种 mismatch，分不清是环境没齐
-# 还是判据本身不对：
-#   (a) "parser 未产出 IR"          —— 第二个参数指定的文件缺失或为空（本阶段属预期）
+# parser 必须把中间代码写到第二个参数指定的文件；本运行台**把两类失败分开报**，
+# 否则满屏同一种 mismatch，分不清是环境没齐还是判据本身不对：
+#   (a) "parser 未产出 IR"          —— 第二个参数指定的文件缺失或为空（驱动没接上）
 #   (b) "IR 产出但结果与 .exp 不符" —— 真正需要看的 mismatch
 # 纪律（实验一/二栽过）：
 #   * 缺 .exp 必须 FAIL，**不得 SKIP**；
@@ -25,8 +24,8 @@ PY="$(command -v python3 || command -v python || true)"
 if [ -z "$PY" ]; then echo "找不到 python3 / python" >&2; exit 2; fi
 
 # parser 路径可被 LAB3_PARSER 覆盖 —— 仅供本运行台的判别力自证使用：
-# 用一个会写出固定 IR 的桩 parser，就能在 Task 12（真 parser 还不会写第二份文件）
-# 之前就验证"(b) IR 结果与 .exp 不符"这条分支真的会红。
+# 用一个会写出固定 IR 的桩 parser，就能在不依赖真解析器转换结果的情况下，
+# 验证"(b) IR 结果与 .exp 不符"这条分支真的会红。
 PARSER="${LAB3_PARSER:-$REPO/parser}"
 if [ ! -x "$PARSER" ]; then
     echo "找不到可执行的 parser：$PARSER（先在仓库根 make，或用 LAB3_PARSER 指定）" >&2
@@ -94,7 +93,7 @@ for cmm in "${cmms[@]}"; do
 
     # (a) parser 没产出 IR —— 与 (b) 分开报
     if [ ! -s "$ir" ]; then
-        echo "FAIL $rel: parser 未产出 IR（第二个参数指定的文件缺失或为空）—— 本阶段属预期，等 Task 12"
+        echo "FAIL $rel: parser 未产出 IR（第二个参数指定的文件缺失或为空）"
         fail=$((fail + 1)); failed+=("$rel"); continue
     fi
 

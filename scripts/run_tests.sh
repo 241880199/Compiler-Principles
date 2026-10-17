@@ -109,7 +109,7 @@ if [ -d Test/lab2 ]; then
     for cmm in Test/lab2/*.cmm; do
         [ -e "$cmm" ] || continue
         lab2_ran=$((lab2_ran + 1))
-        runner=./parser
+        runner=./scripts/parser_stdout_only.sh      # 原为 ./parser
         check_one "$cmm" "$runner"
     done
 fi
