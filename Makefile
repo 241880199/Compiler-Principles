@@ -163,19 +163,17 @@ opt-test: Test/unit/test_opt
 
 # 「响亮失败」用例：单赋值 / 先定义后使用被违反时必须 abort。
 # abort 带 SIGABRT 结束整个进程，故与普通用例分成**独立调用**（同 ir-abort-test 的理由）。
-# 通过判据两条都要满足：退出码非 0 **且** stderr 含点名违规的诊断 ——
-# 只看退出码会让“被别的信号杀掉”蒙混过关，只看文字则可能漏掉“其实没崩”。
-# 两个子模式各自跑一次；`mktemp` 避免在仓内留临时件。
+# 通过判据两条都要满足：退出码**恰为 134**（128+SIGABRT）**且** stderr 含诊断 ——
+# 只看“非 0”会让段错误/其它信号蒙混过关，只看文字则可能漏掉“其实没崩”。
+# 8 个子模式各自跑一次（Task 16b：条件取值例外补 6 个反例）；`mktemp` 避免留临时件。
 opt-abort-test: Test/unit/test_opt
-	@bash -c 'exec 2>/dev/null; rc=0; err=$$(mktemp); \
-	  ./Test/unit/test_opt --double-assign >/dev/null 2>$$err; st1=$$?; \
-	  if [ $$st1 -eq 0 ]; then echo "FAIL opt-abort: 重复赋值没有 abort"; rc=1; fi; \
-	  if ! grep -qF "被赋值两次" $$err; then echo "FAIL opt-abort: 重复赋值诊断缺失"; cat $$err; rc=1; fi; \
-	  ./Test/unit/test_opt --use-before-def >/dev/null 2>$$err; st2=$$?; \
-	  if [ $$st2 -eq 0 ]; then echo "FAIL opt-abort: 先定义后使用没有 abort"; rc=1; fi; \
-	  if ! grep -qF "赋值之前使用" $$err; then echo "FAIL opt-abort: 先定义后使用诊断缺失"; cat $$err; rc=1; fi; \
-	  rm -f $$err; \
-	  if [ $$rc -eq 0 ]; then echo "PASS opt-abort（退出码 $$st1 / $$st2）"; fi; exit $$rc'
+	@bash -c 'exec 2>/dev/null; rc=0; for m in --double-assign --use-before-def --pair-no-label \
+	    --pair-cross-func --pair-third --pair-wrong-const --pair-no-prev0 --self-use; do \
+	    err=$$(mktemp); ./Test/unit/test_opt $$m >/dev/null 2>$$err; st=$$?; \
+	    if [ $$st -ne 134 ]; then echo "FAIL opt-abort $$m: 退出码 $$st（期望 134）"; rc=1; \
+	    elif ! grep -qE "赋值|使用" $$err; then echo "FAIL opt-abort $$m: 诊断缺失"; cat $$err; rc=1; fi; \
+	    rm -f $$err; done; \
+	    if [ $$rc -eq 0 ]; then echo "PASS opt-abort（8 个模式均 134）"; fi; exit $$rc'
 
 # AST 形状判别表单测：全项目唯一一个直接构造 Node 来钉"语法树长什么样"的用例。
 # 判别表一旦判错，错的是整棵树的语义，而错误的 IR 往往"看着挺像那么回事"，

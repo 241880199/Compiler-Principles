@@ -3,8 +3,10 @@
  * 被测对象只有“框架”本身，不测任何实际优化（O1–O9 在 Task 17–19 才实现）：
  *   1) irIsTemp 的名字判定（t1/t12 真；t/temp/t1x/label1/v1 假）；
  *   2) irCountOperandUses 的“只数读、不数定义”口径与同行多次出现计数；
- *   3) 全桩时的 no-op：optimizeIR 前后 IR 逐字节不变；
- *   4) 临时变量单赋值断言“会响”：--double-assign / --use-before-def 必须 abort。
+ *   3) irTempDefCount 数全部定义（条件取值模板 = 2、普通临时变量 = 1、非临时 = 0）；
+ *   4) 全桩时的 no-op：optimizeIR 前后 IR 逐字节不变；
+ *   5) 临时变量单赋值断言“会响”：8 个 abort 子模式（重复赋值 / 赋值前使用 /
+ *      条件取值例外的 6 种反例）必须诊断 + abort。
  *
  * ★ 独立可执行 + 子模式，而不是把 abort 用例并进普通用例：abort() 会结束整个进程，
  *   并进主流程会让后面的用例一条都不跑（与 test_ir_abort 的理由相同）。
@@ -233,6 +235,28 @@ static void check_ir(const char *name, const char *const *in, const char *const 
 
 /* ── 用例 ───────────────────────────────────────────────────────────────── */
 
+/* 指导书表 2 的“条件表达式作为值”模板：同一个 tN 先 #0 后 #1（跨 LABEL）。
+ * 这是单赋值断言**唯一**允许的例外（见 optimize.c 的 isCondValuePair）；
+ * 本文件里 no-op 与 irTempDefCount 两处用例共用这一份输入。 */
+static const char *const cond_value_prog[] = {
+    "t1 := #0",
+    "IF v1 != #0 GOTO label1",
+    "GOTO label2",
+    "LABEL label1 :",
+    "t1 := #1",
+    "LABEL label2 :",
+    "IF t1 != #0 GOTO label3",
+    "GOTO label4",
+    "LABEL label3 :",
+    "WRITE #1",
+    "GOTO label5",
+    "LABEL label4 :",
+    "WRITE #0",
+    "LABEL label5 :",
+    "RETURN #0",
+    NULL
+};
+
 static void test_is_temp(void) {
     check_int("t1 是临时变量",       irIsTemp(opVar("t1")), 1);
     check_int("t12 是临时变量",      irIsTemp(opVar("t12")), 1);
@@ -344,79 +368,127 @@ static void test_noop(void) {
         "RETURN v1",
         NULL
     };
-    /* 指导书表 2 的“条件表达式作为值”模板：同一个 tN 先 #0 后 #1（跨 LABEL）。
-     * 这是单赋值断言**唯一**允许的例外（见 optimize.c 的 isCondValuePair）。 */
-    static const char *const cond_value[] = {
-        "t1 := #0",
-        "IF v1 != #0 GOTO label1",
-        "GOTO label2",
-        "LABEL label1 :",
-        "t1 := #1",
-        "LABEL label2 :",
-        "IF t1 != #0 GOTO label3",
-        "GOTO label4",
-        "LABEL label3 :",
-        "WRITE #1",
-        "GOTO label5",
-        "LABEL label4 :",
-        "WRITE #0",
-        "LABEL label5 :",
-        "RETURN #0",
-        NULL
-    };
-
     check_ir("no-op（普通变量）", plain, plain);
     check_ir("no-op（临时变量，断言通过）", with_temp, with_temp);
     check_ir("no-op（普通变量重复赋值不误报）", var_redef, var_redef);
-    check_ir("no-op（条件取值模板 #0/#1 不误报）", cond_value, cond_value);
+    check_ir("no-op（条件取值模板 #0/#1 不误报）", cond_value_prog, cond_value_prog);
+
+    /* READ tN 合法：x 既是定义也是自读，不算“赋值前使用”。 */
+    {
+        static const char *const read_temp[] = {
+            "READ t1",
+            "RETURN t1",
+            NULL
+        };
+        check_ir("no-op（READ t1 自读不误报）", read_temp, read_temp);
+    }
+}
+
+/* irTempDefCount：按 codeDefines 口径数**全部**定义（不套用条件取值例外）；
+ * 非临时变量返回 0。O3/O4 必须用它 == 1 作为值替换的门槛。 */
+static void test_temp_def_count(void) {
+    static const char *const normal_temp[] = {
+        "t1 := #5",
+        "RETURN t1",
+        NULL
+    };
+    static const char *const variable[] = {
+        "v1 := #5",
+        "v1 := #6",
+        "RETURN v1",
+        NULL
+    };
+    static const char *const read_temp[] = {
+        "READ t1",
+        "RETURN t1",
+        NULL
+    };
+    InterCodeList *t;
+
+    t = buildIR(cond_value_prog);
+    check_int("条件取值模板 t1 定义 2 次", irTempDefCount(t, opVar("t1")), 2);
+    check_int("条件取值模板 non-temp v1 返回 0", irTempDefCount(t, opVar("v1")), 0);
+
+    t = buildIR(normal_temp);
+    check_int("普通临时变量 t1 定义 1 次", irTempDefCount(t, opVar("t1")), 1);
+    check_int("未出现的临时变量 t2 返回 0", irTempDefCount(t, opVar("t2")), 0);
+
+    t = buildIR(variable);
+    check_int("普通变量 v1 多次赋值仍返回 0", irTempDefCount(t, opVar("v1")), 0);
+
+    t = buildIR(read_temp);
+    check_int("READ t1 计 1 次定义", irTempDefCount(t, opVar("t1")), 1);
+    check_int("空表返回 0", irTempDefCount(irList(), opVar("t1")), 0);
+}
+
+/* ── abort 子模式：每一种都必须让 optimizeIR 诊断 + abort ────────────────
+ *
+ * 除原有的“重复赋值 / 赋值前使用”外，Task 16b 为条件取值例外补了 6 个**负例**，
+ * 钉住例外判据的每一条（无 LABEL、跨函数、第三次、常量不是 #1、前一次不是 #0、
+ * 自赋值）。判据被放宽任何一条，对应用例就会“optimizeIR 未 abort”而判红。 */
+static const char *const abort_double_assign[] = {
+    "t1 := #5", "t1 := #6", "RETURN t1", NULL
+};
+static const char *const abort_use_before_def[] = {
+    "RETURN t1", "t1 := #5", NULL
+};
+static const char *const abort_pair_no_label[] = {
+    "t1 := #0", "t1 := #1", "RETURN t1", NULL
+};
+static const char *const abort_pair_cross_func[] = {
+    "FUNCTION f :", "t1 := #0", "LABEL l :",
+    "FUNCTION g :", "t1 := #1", "RETURN t1", NULL
+};
+static const char *const abort_pair_third[] = {
+    "t1 := #0", "LABEL l :", "t1 := #1",
+    "LABEL m :", "t1 := #1", "RETURN t1", NULL
+};
+static const char *const abort_pair_wrong_const[] = {
+    "t1 := #0", "LABEL l :", "t1 := #2", "RETURN t1", NULL
+};
+static const char *const abort_pair_no_prev0[] = {
+    "t1 := #5", "LABEL l :", "t1 := #1", "RETURN t1", NULL
+};
+static const char *const abort_self_use[] = {
+    "t1 := t1", "RETURN t1", NULL
+};
+
+static const char *const *abortProgFor(const char *mode) {
+    if (strcmp(mode, "--double-assign") == 0)     return abort_double_assign;
+    if (strcmp(mode, "--use-before-def") == 0)    return abort_use_before_def;
+    if (strcmp(mode, "--pair-no-label") == 0)     return abort_pair_no_label;
+    if (strcmp(mode, "--pair-cross-func") == 0)   return abort_pair_cross_func;
+    if (strcmp(mode, "--pair-third") == 0)        return abort_pair_third;
+    if (strcmp(mode, "--pair-wrong-const") == 0)  return abort_pair_wrong_const;
+    if (strcmp(mode, "--pair-no-prev0") == 0)     return abort_pair_no_prev0;
+    if (strcmp(mode, "--self-use") == 0)          return abort_self_use;
+    return NULL;
 }
 
 /* 失败模式：必须 abort。若 optimizeIR 正常返回，本函数以 1 退出（Makefile 判红）。 */
-static void run_abort_case(int use_before_def) {
-    InterCodeList *t = irList();
-    InterCode *c;
-
-    if (!use_before_def) {
-        c = newCode(IR_ASSIGN);
-        c->u.assign.x = opVar("t1"); c->u.assign.y = opConst(5);
-        irAppend(t, c);
-        c = newCode(IR_ASSIGN);
-        c->u.assign.x = opVar("t1"); c->u.assign.y = opConst(6);
-        irAppend(t, c);
-        c = newCode(IR_RETURN);
-        c->u.one.x = opVar("t1");
-        irAppend(t, c);
-    } else {
-        c = newCode(IR_RETURN);
-        c->u.one.x = opVar("t1");
-        irAppend(t, c);
-        c = newCode(IR_ASSIGN);
-        c->u.assign.x = opVar("t1"); c->u.assign.y = opConst(5);
-        irAppend(t, c);
-    }
-
-    optimizeIR(t);   /* 必须在此 abort（stderr 有诊断） */
-
-    fprintf(stderr, "FAIL %s: optimizeIR 未 abort\n",
-            use_before_def ? "--use-before-def" : "--double-assign");
+static void run_abort_case(const char *mode, const char *const *prog) {
+    optimizeIR(buildIR(prog));   /* 必须在此 abort（stderr 有诊断） */
+    fprintf(stderr, "FAIL %s: optimizeIR 未 abort\n", mode);
     exit(1);
 }
 
 int main(int argc, char **argv) {
     if (argc > 1) {
-        if (strcmp(argv[1], "--double-assign") == 0) {
-            run_abort_case(0);
-        } else if (strcmp(argv[1], "--use-before-def") == 0) {
-            run_abort_case(1);
-        } else {
-            fprintf(stderr, "usage: %s [--double-assign|--use-before-def]\n", argv[0]);
+        const char *const *prog = abortProgFor(argv[1]);
+        if (!prog) {
+            fprintf(stderr, "usage: %s [--double-assign|--use-before-def|"
+                            "--pair-no-label|--pair-cross-func|--pair-third|"
+                            "--pair-wrong-const|--pair-no-prev0|--self-use]\n",
+                    argv[0]);
             return 2;
         }
+        run_abort_case(argv[1], prog);
         return 1;   /* 不可达：run_abort_case 要么 abort 要么 exit(1) */
     }
 
     test_is_temp();
     test_count_uses();
+    test_temp_def_count();
     test_noop();
 
     if (failures) {

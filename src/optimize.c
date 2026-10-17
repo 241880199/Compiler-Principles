@@ -97,26 +97,55 @@ static int codeReadOperands(InterCode *c, Operand out[3]) {
     return n;
 }
 
-static int codeReadsOperand(InterCode *c, Operand o) {
-    Operand reads[3];
-    int n = codeReadOperands(c, reads), i;
-    for (i = 0; i < n; i++)
-        if (operandEqual(reads[i], o)) return 1;
-    return 0;
-}
-
 int irCountOperandUses(InterCodeList *head, Operand o) {
     InterCodeList *h = irHead(head), *p;
     int count = 0;
     if (!h || !o) return 0;
     for (p = h->next; p != h; p = p->next) {
         Operand reads[3];
-        int n, i;
-        if (!codeReadsOperand(p->code, o)) continue;   /* 本行不读 o：整行跳过 */
-        n = codeReadOperands(p->code, reads);
+        int n = codeReadOperands(p->code, reads), i;
         for (i = 0; i < n; i++)
             if (operandEqual(reads[i], o)) count++;   /* 同行多次出现就数多次 */
     }
+    return count;
+}
+
+/* 该指令**定义**的操作数；没有定义的指令返回 NULL。
+ *
+ * 有定义：ASSIGN / ADD / SUB / MUL / DIV / ADDR / ASSIGN_DEREF / CALL / READ / DEC。
+ * 无定义：LABEL / FUNCTION / GOTO / IF / RETURN / ARG / PARAM / WRITE / DEREF_ASSIGN
+ *         （`*x := y` 写的是 x 指向的内存，不是对临时变量 x 的定义）。
+ * 只有名字是 tN 的操作数才进入断言射程；DEC 的 x 虽是变量，也照此过滤。
+ *
+ * ★ 放在 `#if LAB3_OPT` **之外**：公共查询 irTempDefCount 与单赋值断言必须共用
+ *   同一份“定义”口径，且 `LAB3_OPT=0` 的构建也要能链接。 */
+static Operand codeDefines(InterCode *c) {
+    if (!c) return NULL;
+    switch (c->kind) {
+    case IR_ASSIGN:
+    case IR_ADDR:
+        return c->u.assign.x;
+    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV:
+        return c->u.binop.x;
+    case IR_ASSIGN_DEREF:
+        return c->u.deref.x;
+    case IR_CALL:
+        return c->u.call.x;
+    case IR_READ:
+        return c->u.one.x;
+    case IR_DEC:
+        return c->u.dec.x;
+    default:
+        return NULL;
+    }
+}
+
+int irTempDefCount(InterCodeList *head, Operand o) {
+    InterCodeList *h = irHead(head), *p;
+    int count = 0;
+    if (!h || !irIsTemp(o)) return 0;
+    for (p = h->next; p != h; p = p->next)
+        if (operandEqual(codeDefines(p->code), o)) count++;
     return count;
 }
 
@@ -168,33 +197,6 @@ static TempDef *tempDefAdd(TempDefTable *t, const char *name) {
     return d;
 }
 
-/* 该指令**定义**的操作数；没有定义的指令返回 NULL。
- *
- * 有定义：ASSIGN / ADD / SUB / MUL / DIV / ADDR / ASSIGN_DEREF / CALL / READ / DEC。
- * 无定义：LABEL / FUNCTION / GOTO / IF / RETURN / ARG / PARAM / WRITE / DEREF_ASSIGN
- *         （`*x := y` 写的是 x 指向的内存，不是对临时变量 x 的定义）。
- * 只有名字是 tN 的操作数才进入断言射程；DEC 的 x 虽是变量，也照此过滤。 */
-static Operand codeDefines(InterCode *c) {
-    if (!c) return NULL;
-    switch (c->kind) {
-    case IR_ASSIGN:
-    case IR_ADDR:
-        return c->u.assign.x;
-    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV:
-        return c->u.binop.x;
-    case IR_ASSIGN_DEREF:
-        return c->u.deref.x;
-    case IR_CALL:
-        return c->u.call.x;
-    case IR_READ:
-        return c->u.one.x;
-    case IR_DEC:
-        return c->u.dec.x;
-    default:
-        return NULL;
-    }
-}
-
 static void tempViolation(const char *name, const char *what, int index,
                           const char *func) {
     if (func)
@@ -222,13 +224,17 @@ static void tempViolation(const char *name, const char *what, int index,
  * 例外判据**刻意收得很窄**，以保住断言的判别力：
  *   · 恰好是第二次定义（第三次起一律 abort）；
  *   · 上一次是 `t := #0`，这一次是 `t := #1`；
- *   · 两次定义之间跨过至少一个 LABEL，且在同一函数内。
+ *   · 两次定义之间跨过至少一个 LABEL，**且本次定义的前一条指令就是 LABEL**
+ *     （真实模板是 `LABEL l_true :` 紧跟 `t := #1`；只要求“中间有 LABEL”会放过
+ *     `t := #0 … LABEL x … 别的代码 … t := #1`）；
+ *   · 同一函数。
  * 其余任何第二次赋值（包括本单测的 `t1 := #5` / `t1 := #6`）仍然响亮 abort。 */
 static int isCondValuePair(const TempDef *d, InterCode *c,
-                           int labelCount, int funcSerial) {
+                           int labelCount, int funcSerial, int prevKind) {
     return d->defs == 1 &&
            d->lastDefIsConst && d->lastDefConst == 0 &&
            labelCount > d->labelCountAtDef &&
+           prevKind == IR_LABEL &&
            funcSerial == d->funcSerialAtDef &&
            c->kind == IR_ASSIGN &&
            c->u.assign.y && c->u.assign.y->kind == OP_CONST &&
@@ -238,13 +244,18 @@ static int isCondValuePair(const TempDef *d, InterCode *c,
 /* 顺序扫描整条 IR：
  *   · tN 第二次被定义          ⇒ 诊断 + abort（上一条注释的模板除外）；
  *   · tN 在定义之前被读        ⇒ 诊断 + abort。
- * 每条指令内先登记定义、再检查读，故 `READ tN`（定义并“读”自己）不会误报。
+ *
+ * ★ 每条指令内**先检查读、再登记定义**（Task 16b 修正）：若先登记，`t1 := t1`
+ *   的首次出现会被当成“读到的正是刚登记的定义”而漏报。唯一例外是 `READ tN`：
+ *   它的 x 既是定义也是“读自己”，该自读不算“赋值前使用”——只跳过与定义相同的
+ *   那个读操作数，其余指令里“读与定义同操作数”（`t1 := t1`、`t1 := t1 + #1`）
+ *   仍然响亮 abort。
  * 诊断尽量点名变量、指令序号与所在函数。 */
 static void assertTempsSingleAssign(InterCodeList *h) {
     InterCodeList *hh = irHead(h), *p;
     TempDefTable defined;
     const char *func = NULL;
-    int index = 0, labelCount = 0, funcSerial = 0;
+    int index = 0, labelCount = 0, funcSerial = 0, prevKind = -1;
 
     defined.count = 0;
     if (!hh) return;
@@ -255,14 +266,25 @@ static void assertTempsSingleAssign(InterCodeList *h) {
         int n, i;
 
         index++;
-        if (!c) continue;
+        if (!c) { prevKind = -1; continue; }
         if (c->kind == IR_FUNCTION) {
             funcSerial++;
             if (c->u.one.x && c->u.one.x->name) func = c->u.one.x->name;
         }
         if (c->kind == IR_LABEL) labelCount++;
 
+        /* 先检查读：定义尚未登记，故 `t := t`（首次出现）会在这里被抓住。
+         * READ 的自读（x 同时是定义）豁免。 */
         def = codeDefines(c);
+        n = codeReadOperands(c, reads);
+        for (i = 0; i < n; i++) {
+            if (c->kind == IR_READ && def && operandEqual(reads[i], def))
+                continue;
+            if (irIsTemp(reads[i]) && !tempDefFind(&defined, reads[i]->name))
+                tempViolation(reads[i]->name, "在被赋值之前使用", index, func);
+        }
+
+        /* 再登记定义（或判定条件取值例外的第二次定义）。 */
         if (def && irIsTemp(def)) {
             TempDef *d = tempDefFind(&defined, def->name);
             if (!d) {
@@ -273,7 +295,7 @@ static void assertTempsSingleAssign(InterCodeList *h) {
                 d->lastDefIsConst = (c->kind == IR_ASSIGN &&
                                      c->u.assign.y && c->u.assign.y->kind == OP_CONST);
                 d->lastDefConst = d->lastDefIsConst ? c->u.assign.y->value : 0;
-            } else if (isCondValuePair(d, c, labelCount, funcSerial)) {
+            } else if (isCondValuePair(d, c, labelCount, funcSerial, prevKind)) {
                 d->defs = 2;
                 d->labelCountAtDef = labelCount;
                 d->lastDefIsConst = 1;
@@ -283,11 +305,7 @@ static void assertTempsSingleAssign(InterCodeList *h) {
             }
         }
 
-        n = codeReadOperands(c, reads);
-        for (i = 0; i < n; i++) {
-            if (irIsTemp(reads[i]) && !tempDefFind(&defined, reads[i]->name))
-                tempViolation(reads[i]->name, "在被赋值之前使用", index, func);
-        }
+        prevKind = c->kind;
     }
 }
 
