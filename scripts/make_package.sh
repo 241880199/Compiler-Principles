@@ -2,7 +2,7 @@
 # 打交付包：与实验一**同构** —— 根下 report.pdf，源码平铺在 Code/。
 #
 #   用法： bash scripts/make_package.sh [输出文件]
-#          缺省输出 ../../作业二/proj2_submission.zip（见下方 OUT 处的说明）
+#          缺省输出 ../../作业三/proj3_submission.zip（见下方 OUT 处的说明）
 #          ALLOW_DIRTY=1  工作区有未提交改动时仍继续（会打印警告）
 #          SKIP_VERIFY=1  不调 verify_package.sh（**不建议**，见下）
 #
@@ -18,21 +18,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO=$PWD
-# 缺省输出到 **作业二/** —— 交付物按作业归档，且**不放仓库里**（仓库是公开的，交付包
+# 缺省输出到 **作业三/** —— 交付物按作业归档，且**不放仓库里**（仓库是公开的，交付包
 # 不该混进去；`*.zip` 也未被 .gitignore 覆盖，落进来就是脏工作区）。
-# 注意本仓库的物理位置有点绕：它在 `作业一/Compiler-Principles`，而实验二的交付物属于
-# **兄弟**目录 `作业二/` —— 所以是 `../../作业二/`，不是 `../`（写错过一次：包落进了
+# 注意本仓库的物理位置有点绕：它在 `作业一/Compiler-Principles`，而实验三的交付物属于
+# **兄弟**目录 `作业三/` —— 所以是 `../../作业三/`，不是 `../`（写错过一次：包落进了
 # 作业一/，与实验一的包混在一起，而脚本照旧打印成功）。
-OUT=$(realpath -m "${1:-$REPO/../../作业二/proj2_submission.zip}")
-REPORT_PDF=docs/实验二报告.pdf
+OUT=$(realpath -m "${1:-$REPO/../../作业三/proj3_submission.zip}")
+REPORT_PDF=docs/实验三报告.pdf
 
 # 交付包一律**不落在仓库里**（公开仓库 + *.zip 未被 .gitignore 覆盖）。上面那个
-# `../` 写成 `../../作业二/` 的错就是**静默**的：包打错地方，脚本照旧打印成功。
+# `../` 写成 `../../作业三/` 的错就是**静默**的：包打错地方，脚本照旧打印成功。
 # 故把它变成硬失败。
 case "$OUT" in
     "$REPO"/*)
         echo "错误：输出路径落在仓库内（$OUT）—— 交付包不入库。" >&2
-        echo "      缺省应落在兄弟目录 作业二/ 下。" >&2
+        echo "      缺省应落在兄弟目录 作业三/ 下。" >&2
         exit 1
         ;;
 esac
@@ -61,7 +61,7 @@ fi
 if [ ! -s "$REPORT_PDF" ]; then
     echo "错误：找不到 $REPORT_PDF" >&2
     echo "      报告需现场排版（xelatex 编**两遍**，只编一遍页数不作数）：" >&2
-    echo "      cd docs && xelatex -interaction=nonstopmode 实验二报告.tex  # ×2" >&2
+    echo "      cd docs && xelatex -interaction=nonstopmode 实验三报告.tex  # ×2" >&2
     exit 1
 fi
 
@@ -112,7 +112,7 @@ CUT=$(grep -n "^# $SENTINEL >>>" "$WORK/head-Makefile" | head -1 | cut -d: -f1)
 
 {
     cat <<'HDR'
-# 实验二交付包 Makefile —— **由 scripts/make_package.sh 机械派生，请勿手改**。
+# 实验三交付包 Makefile —— **由 scripts/make_package.sh 机械派生，请勿手改**。
 #
 # 派生自仓库 Makefile 的核心构建段（到 PKG-CUT 哨兵为止）中的非注释行，并去掉
 # `src/` 前缀 —— 本包内源码平铺于 Code/ 下。改构建规则请改仓库 Makefile 再重新打包。

@@ -1,0 +1,168 @@
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.2cm,top=1.9cm,bottom=1.9cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\normalsize,
+  columns=flexible,
+  breaklines=true,
+  frame=single,
+  framesep=3pt,
+  xleftmargin=4pt,
+  aboveskip=6pt,
+  belowskip=6pt,
+  keepspaces=true,
+}
+
+\setlength{\parindent}{2em}    
+\setlength{\parskip}{4pt}
+\linespread{1.18}
+\renewcommand{\arraystretch}{1.25}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+{\large\bfseries 实验一：C{-}{-} 词法分析器与语法分析器}\\[4pt]
+张苏楠\quad 241880199
+\end{center}
+
+\textbf{工具版本}：gcc \textbf{11.4.0}、GNU flex \textbf{2.6.4}、GNU bison
+\textbf{3.8.2}、GNU make \textbf{4.3}（Ubuntu 22.04）
+
+\section*{一、实现的功能，以及如何实现}
+
+{\normalsize
+\setlength{\parindent}{0pt}
+\begin{tabular}{@{}>{\centering\arraybackslash}m{2.6cm}m{13.4cm}@{}}
+\hline
+\textbf{功能} & \textbf{如何实现，以及为什么这样实现} \\
+\hline
+错误类型 A（词法） & 未定义字符无法逐个枚举，故用 flex 兜底规则 ；非法八/十六进制数、残缺指数浮点数则形式上像合法词素，没法靠正则先排除，只能\textbf{匹配后在 action 内校验}后报错（见选做 1.1）。\\
+\hline
+错误类型 B（语法） & bison无法记行号，故行号由 lexer 侧的 \code{curTokenLine} 跟进；\code{error} 产生式提供恢复出口——bison 默认遇错即停，没有出口就只能报出第一条（见亮点 2）。 \\
+\hline
+语法树打印 & 让 \code{YYSTYPE} 直接取 \code{Node *}：词法单元由 lexer 侧构造结点、语法单元在 action 里用 \code{newNode(...)} 组装。二者因此\textbf{同构}，先序打印一份递归代码即可。\\
+\hline
+行号与$\varepsilon$ 判定 & 都不在 action 里赋值，而是打印时由结构递归推导——行号的定义本就是「子树中第一个词素所在行」，是\textbf{结构的性质}；写进 action 则每个产生式都要重复一遍，漏了也没有东西能发现。且二者本质上等价（见亮点 1）。 \\
+\hline
+选做 1.1\par 八/十六进制 & 八进制规则 \code{0[0-9]+} 写得比十进制规则\textbf{更长}，用 flex 的\textbf{最长匹配}先抢到 \code{09} 这类输入，再在 action 内逐位校验——否则 \code{09} 会被朴素地切成 \code{0} 和 \code{9}，错误顺延到语法阶段才暴露。十六进制的校验模式必须写成 \code{0[xX][0-9a-zA-Z\_]+}：写成 \code{0[xX][a-zA-Z\_]+} 时对 \code{0x3F} 只能匹配 3 个字符，比合法规则\textbf{短}，匹配权被夺走，\code{G} 这类非法字符就永远检测不到。 \\
+\hline
+选做 1.2\par 指数浮点 & 合法规则与残缺规则的长度天然可分（\code{1.05e-4} 匹配 7 字符、残缺规则只能匹配 5 字符），故\textbf{与书写顺序无关}——合法输入下合法规则必然更长，非法输入下合法规则根本不匹配，二者无需相互顾忌。 \\
+\hline
+选做 1.3\par 注释 & 用起始条件 \code{\%x COMMENT} 做状态机：\code{"/*"} 进入、\code{"*/"} 退出，其间字符丢弃——注释可跨任意多行，正则表达不了「未闭合」，只能靠起始条件维持状态。未闭合 \code{/*} 在 \code{<<EOF>>} 处报 type A，\textbf{行号报在其起始行}：报在 EOF 行会指向一段无关代码。 \\
+\hline
+数值输出 & \code{INT} 用 \code{strtol(s, NULL, 0)}——基数 0 让 C 库自动识别 \code{0} 与 \code{0x} 前缀，不必手写进制转换。\code{FLOAT} 用 \code{printf("\%f", atof(s))}，缓冲区取 512 字节：\code{\%f} 会把 \code{0.5e103} 展开成 110 个字符，而 64 字节的缓冲区会\textbf{静默截断成错值}。 \\
+\hline
+\end{tabular}}
+
+
+\section*{二、如何编译}
+
+\begin{lstlisting}[language=bash]
+sudo apt-get install -y flex bison gcc make
+make clean && make          # 生成 ./parser（同时生成同内容的 ./cc）
+./parser <文件>              # 或 ./cc <文件>
+\end{lstlisting}
+
+
+\section*{三、亮点 1：行号推导与 $\varepsilon$ 判定等价}
+
+语法单元的行号由结构递归推导，而不在每个 action 里赋值：
+
+\begin{lstlisting}[language=C]
+static int nodeLine(const Node *n) {        /* 子树中第一个词法单元的行号 */
+    if (n->kind == NODE_TOKEN) return n->line;     /* 0 表示不含词法单元 */
+    for (int i = 0; i < n->nchild; i++) { int l = nodeLine(n->child[i]);
+        if (l > 0) return l; }
+    return 0;
+}
+\end{lstlisting}
+
+词法单元的行号由 lexer 写入一次，是唯一可信来源；语法单元的行号则是\textbf{结构的
+函数}。这消除了「某个产生式忘了写行号」这一整类 bug。
+
+输出规则是「语法单元产生了 $\varepsilon$ 就不打印」，而
+
+\begin{center}
+「产生 $\varepsilon$」$\iff$ 推不出任何词素 $\iff$ \textbf{整棵子树不含词法单元}
+$\iff$ \code{nodeLine} 返回 \code{0}
+\end{center}
+
+\textbf{二者等效}——因此不需要第二个标志位，$\varepsilon$ 判定是行号推导的
+副产品，而不是另一段代码。若改用 \code{nchild == 0} 判 $\varepsilon$ 就会出错：
+\code{Program -> ExtDefList -> $\varepsilon$} 时 \code{Program} 有\emph{一个}子结点，
+会被误判为非 $\varepsilon$，于是打印出一行无关的 \code{Program (0)}——而行号
+\code{0} 本身其实已经暴露了它推不出任何词素。
+
+\section*{四、亮点 2：错误恢复的同步点设计}
+
+错误恢复的目标是报出文件中的\textbf{全部}错误，而 Bison 默认遇错即停，故须用
+\code{error} 产生式给出恢复出口。出口的选择原则是\textbf{弹栈越少、丢弃越少越好}
+——恢复之所以会漏报，来源正是「丢弃」。最终采用四个：\code{Stmt : error SEMI}（语句层）、
+\code{ExtDef : error SEMI}（顶层，避免弹空栈中止），以及\textbf{不带同步符的两条}
+——\code{CompSt : error}（块层）与\code{Def : error}（定义层）。
+
+\subsection*{4.1 「带不带同步符」比「放哪一层」更重要}
+
+\code{error} 带同步符时，Bison 会先\textbf{丢弃}词法单元直到同步符出现才归约；而
+\textbf{裸 \code{error} 移进后立即归约、不丢弃任何前瞻}。这一点直接决定能报出多少错误：
+
+{\normalsize
+\setlength{\parindent}{0pt}
+\begin{tabular}{@{}c c >{\centering\arraybackslash}m{4.0cm} >{\centering\arraybackslash}m{4.0cm}@{}}
+\hline
+写法 & 冲突 state & 场景1\par 块内定义缺分号、块继续 & 场景2\par 缺分号紧接 \code{\}}、后有兄弟 \\
+\hline
+不加 & 1 & \textbf{只报 1 条}（少报） & 报 2 条 \\
+\hline
+\code{| error SEMI} & 3 & 报 2 条 & \textbf{只报 1 条}（少报） \\
+\hline
+\code{| error RC} & 3 & \textbf{只报 1 条}（少报） & 报 2 条 \\
+\hline
+\textbf{\code{| error}（裸）$\to$ 采纳} & \textbf{3} & \textbf{报 2 条} & \textbf{报 2 条} \\
+\hline
+\end{tabular}}
+
+机理：场景2里整份文件\textbf{一个 \code{;} 都没有}，\code{error SEMI} 只能一路
+丢到 EOF，于是只报第 1 条；\code{error RC} 则把 \code{\}} 本身当同步符吃掉，块内
+后续内容整段消失。裸 \code{error} 不丢任何东西，\code{\}} 仍在流里、外层结构照常
+走完。\textbf{这是纯收益}：裸 \code{error} 引入的 2 个冲突与 \code{error SEMI}
+完全相同——冲突由 \code{error} 符号本身引起（\code{DefList} 可空），与后面
+跟不跟同步符无关。
+
+\subsection*{4.2 一条被否决的规则：\code{Exp : error RB}}
+
+原设计还有一条 \code{Exp : error RB}，推演看着很对：\code{a[5,3] = 1.5;} 在下标处
+出错时就地恢复、正好在 \code{]} 同步。但加上它之后反而报出 3 条错误（行 5、
+行 5、行 6），违反「同一行不出现多个错误」这条输出约定。用 \code{bison -t} 的调试
+轨迹查明：\code{Exp LB . Exp RB} 状态的\textbf{闭包里就含}
+\code{Exp -> . error RB}，所以 Bison 在下标内部就找到出口、\textbf{停止弹
+栈}；而 \code{error} 的同步符 \code{RB} \textbf{恰好就是外层 \code{[} 正在等待的
+那个 \code{]}}，被内层吃掉后外层永远等不到闭合。
+
+所以设计 \code{error} 同步点时，不能只看「error 之后想跟什么」，还要看\textbf{这个
+出口是否已在当前状态的闭包里}——在的话 Bison 就地停下，不会按预期往外弹栈。
+块层出口也由带同步符的 \code{CompSt : error RC} 改成了裸 \code{error}：带同步符时它会
+先把 \code{\}} 本身当同步符吃掉，块内其后的定义整段消失——实测同一份文件因此少报错
+误。改用裸 \code{error} 后不丢弃任何前瞻，冲突数仍是 3。
+
+\section*{五、亮点 3：为什么必须声明 \code{\%left LB DOT}}
+
+文法里显式声明了 \code{\%left LB DOT} 为最高优先级，理由是一条容易被忽略的规则：
+栈上 \code{Exp PLUS Exp .} 遇前瞻 \code{LB} 时，归约得 \code{(a+b)[1]}、移进得
+\code{a+(b[1])}，\textbf{两棵树都合法}——这是真实的 shift/reduce 冲突。而 Bison
+只在\textbf{规则与前瞻 token 都声明了优先级}时才消解，不声明则这类冲突根本
+不进入优先级判定：只声明其余运算符时，\code{Exp} 的 100 处冲突只能消掉 80 处，
+剩下的 20 处正是 \code{LB}/\code{DOT} 引起的。
+
+把这一行删掉，程序对外的行为不会变——显式声明优先级与 Bison 默认移进恰好得出同一张
+LR 动作表；变的只有冲突数，从 3 处涨到 13 处。这 3 处的归属是：两处由 \code{DefList}
+可空引起，即「移进 \code{error}」与「按 \code{DefList} -> $\varepsilon$ 归约」之争；
+一处是悬空 else。
+
+\end{document}
