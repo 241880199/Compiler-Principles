@@ -378,7 +378,9 @@ static void test_noop(void) {
     check_ir("no-op（普通变量）", plain, plain);
     check_ir("no-op（临时变量，断言通过）", with_temp, with_temp);
     check_ir("no-op（普通变量重复赋值不误报）", var_redef, var_redef);
-    check_ir("no-op（条件取值模板 #0/#1 不误报）", cond_value_prog, cond_value_prog);
+    /* ★ Task 19：条件取值模板**不再是** no-op —— O9 会合法地把它改写成
+     * `IF !c GOTO l_false / t := #1 / LABEL l_false`。期望值见 test_control_flow()；
+     * 它同时继续证明改写后仍能通过单赋值断言（isCondValuePair 的 O9 分支）。 */
 
     /* READ tN 合法：x 既是定义也是自读，不算“赋值前使用”。 */
     {
@@ -521,9 +523,11 @@ static void test_copy_prop(void) {
     static const char *const use_twice_arith[] = {
         "t1 := v2 + #1", "v1 := t1 + t1", "RETURN v1", NULL
     };
-    /* 不得匹配 3：条件取值模板的 t 有两次定义。 */
+    /* 不得匹配 3：条件取值模板的 t 有两次定义。label1 必须被引用，否则 O6
+     * 会合法地删掉它，第二次定义就不再紧跟 LABEL（断言随即 abort）——
+     * 那测的就不是 O4 的门槛了。 */
     static const char *const two_defs[] = {
-        "t1 := #0", "LABEL label1 :", "t1 := #1",
+        "t1 := #0", "IF v1 != #0 GOTO label1", "LABEL label1 :", "t1 := #1",
         "v1 := t1", "RETURN v1", NULL
     };
     /* 不得匹配 4：第二条不是 `y := t`。 */
@@ -593,9 +597,10 @@ static void test_inline_const(void) {
     static const char *const param[] = {
         "t1 := #5", "PARAM t1", "RETURN #0", NULL
     };
-    /* 不可内联 5：条件取值模板（t 两次定义）。 */
+    /* 不可内联 5：条件取值模板（t 两次定义）。label1 必须被引用，理由同
+     * test_copy_prop 的 two_defs：否则 O6 会删标号并让断言 abort。 */
     static const char *const two_defs[] = {
-        "t1 := #0", "LABEL label1 :", "t1 := #1",
+        "t1 := #0", "IF v1 != #0 GOTO label1", "LABEL label1 :", "t1 := #1",
         "IF t1 != #0 GOTO label2", "LABEL label2 :", "RETURN #0", NULL
     };
 
@@ -653,6 +658,137 @@ static void test_temp_def_count(void) {
     t = buildIR(read_temp);
     check_int("READ t1 计 1 次定义", irTempDefCount(t, opVar("t1")), 1);
     check_int("空表返回 0", irTempDefCount(irList(), opVar("t1")), 0);
+}
+
+/* ── O6–O9 控制流精简 ─────────────────────────────────────────────────────
+ *
+ * 期望值按**最终 optimizeIR 输出**推导（brief 的要求）：O7/O6 会把 O8 用例里
+ * 的中转 GOTO 和死标号吃掉；条件取值模板会被 O9 改写。各用例同时是在钉
+ * 函数边界、引用计数口径（GOTO/IF/CALL）与 O8 防环。
+ */
+static void test_control_flow(void) {
+    /* O6：全程序无引用 ⇒ 删标号。 */
+    static const char *const dead[] = {
+        "FUNCTION f :", "LABEL l1 :", "RETURN #0", NULL
+    };
+    static const char *const dead_want[] = {
+        "FUNCTION f :", "RETURN #0", NULL
+    };
+    /* O6：IF.z 是引用（定位 refcount 的 IR_IF 分支）。 */
+    static const char *const if_ref[] = {
+        "FUNCTION f :", "IF v1 > #0 GOTO l1", "RETURN #0",
+        "LABEL l1 :", "RETURN #0", NULL
+    };
+    /* O6：CALL.f 是 OP_FUNC，也必须按**名字**算引用（删掉这一支就会误删标号）。 */
+    static const char *const call_ref[] = {
+        "FUNCTION f :", "LABEL l1 :", "t1 := CALL l1", "RETURN #0", NULL
+    };
+
+    /* O7：删 GOTO 后控制流落入标号；O6 随后删掉无引用标号。
+     * 动态收益为 0（GOTO 换成 LABEL），只降静态行数。 */
+    static const char *const adjacent[] = {
+        "GOTO l1", "LABEL l1 :", "RETURN #0", NULL
+    };
+    static const char *const adjacent_want[] = {
+        "RETURN #0", NULL
+    };
+
+    /* O8：GOTO l1 折叠成 GOTO l2；l1 随后被 O6 删掉，l2 仍被引用。
+     * ★ 与 brief 的差异：brief 的期望值还把 `LABEL l1` 后那条**原始** `GOTO l2`
+     *   也删掉了，但没有任何规则会删它（O7 要求它紧邻 `LABEL l2`，而中间隔着
+     *   `RETURN`）。按“实测为准”保留它 —— 它是不可达代码，语义无影响。 */
+    static const char *const chain[] = {
+        "FUNCTION f :", "GOTO l1", "RETURN #0",
+        "LABEL l1 :", "GOTO l2", "RETURN #0",
+        "LABEL l2 :", "RETURN #0", NULL
+    };
+    static const char *const chain_want[] = {
+        "FUNCTION f :", "GOTO l2", "RETURN #0", "GOTO l2", "RETURN #0",
+        "LABEL l2 :", "RETURN #0", NULL
+    };
+    /* O8 防环（brief 字面形状）：`GOTO l2` 紧邻 `LABEL l2`，O7 会先吃掉它，
+     * 随后 O6 删掉无引用的 l2 —— 所以最终不是“不变”，而是 `LABEL l1 / GOTO l1`。
+     * 语义仍是原来的无限循环（l1→l2→l1），RETURN 不可达。 */
+    static const char *const cycle_brief[] = {
+        "LABEL l1 :", "GOTO l2", "LABEL l2 :", "GOTO l1", "RETURN #0", NULL
+    };
+    static const char *const cycle_brief_want[] = {
+        "LABEL l1 :", "GOTO l1", "RETURN #0", NULL
+    };
+    /* O8 防环（O7 不介入，真正走到 gotoChainSafe）：l1↔l2 链必须原样保留。
+     * 去掉防环后第一步就会把 `GOTO l2` 改成 `GOTO l1`（输出变化 ⇒ 本用例变红）。 */
+    static const char *const cycle[] = {
+        "LABEL l1 :", "GOTO l2", "RETURN #0",
+        "LABEL l2 :", "GOTO l1", "RETURN #0", NULL
+    };
+    /* O8 函数边界：LABEL l1 在另一个函数里 ⇒ f 里的 GOTO l1 不得被折叠。 */
+    static const char *const cross_func[] = {
+        "FUNCTION f :", "GOTO l1",
+        "FUNCTION g :", "LABEL l1 :", "GOTO l2", "RETURN #0",
+        "LABEL l2 :", "RETURN #0", NULL
+    };
+
+    /* O9 基本：`>` 取反成 `<=`，GOTO l2 与 LABEL l1 被删。 */
+    static const char *const invert_gt[] = {
+        "IF v1 > #0 GOTO l1", "GOTO l2", "LABEL l1 :", "WRITE #1",
+        "LABEL l2 :", "RETURN #0", NULL
+    };
+    static const char *const invert_gt_want[] = {
+        "IF v1 <= #0 GOTO l2", "WRITE #1", "LABEL l2 :", "RETURN #0", NULL
+    };
+    /* O9 取反表另一项：`==` ⇒ `!=`。 */
+    static const char *const invert_eq[] = {
+        "IF v1 == #0 GOTO l1", "GOTO l2", "LABEL l1 :", "WRITE #1",
+        "LABEL l2 :", "RETURN #0", NULL
+    };
+    static const char *const invert_eq_want[] = {
+        "IF v1 != #0 GOTO l2", "WRITE #1", "LABEL l2 :", "RETURN #0", NULL
+    };
+    /* O9 不得匹配：L1 在 BODY 里还被 GOTO 引用（refcount=2）⇒ 删标号会改变
+     * 另一条跳转的目标，必须整体跳过。 */
+    static const char *const multi_ref[] = {
+        "FUNCTION f :", "IF v1 > #0 GOTO l1", "GOTO l2", "LABEL l1 :",
+        "GOTO l1", "LABEL l2 :", "RETURN #0", NULL
+    };
+    /* O9 空 BODY：两个 LABEL 紧邻，仍应改写。 */
+    static const char *const empty_body[] = {
+        "IF v1 > #0 GOTO l1", "GOTO l2", "LABEL l1 :", "LABEL l2 :",
+        "RETURN #0", NULL
+    };
+    static const char *const empty_body_want[] = {
+        "IF v1 <= #0 GOTO l2", "LABEL l2 :", "RETURN #0", NULL
+    };
+    /* O9 与条件取值模板的交互（原 no-op 用例）：两条 IF 都被反转；被删掉的
+     * LABEL l_true 不再是 `t := #1` 的前驱，后置单赋值断言靠 isCondValuePair
+     * 的 O9 分支放行（否则这里会 abort）。 */
+    static const char *const cond_value_want[] = {
+        "t1 := #0",
+        "IF v1 == #0 GOTO label2",
+        "t1 := #1",
+        "LABEL label2 :",
+        "IF t1 == #0 GOTO label4",
+        "WRITE #1",
+        "GOTO label5",
+        "LABEL label4 :",
+        "WRITE #0",
+        "LABEL label5 :",
+        "RETURN #0",
+        NULL
+    };
+
+    check_ir("O6 无引用标号删除", dead, dead_want);
+    check_ir("O6 IF 引用不删", if_ref, if_ref);
+    check_ir("O6 CALL 引用不删（OP_FUNC 按名字）", call_ref, call_ref);
+    check_ir("O7 GOTO 紧邻 + O6 删标号", adjacent, adjacent_want);
+    check_ir("O8 GOTO 链折叠", chain, chain_want);
+    check_ir("O8 防环（brief 形状；O7 先介入）", cycle_brief, cycle_brief_want);
+    check_ir("O8 防环（l1↔l2 原样保留）", cycle, cycle);
+    check_ir("O8 不跨函数折叠", cross_func, cross_func);
+    check_ir("O9 条件反转（> ⇒ <=）", invert_gt, invert_gt_want);
+    check_ir("O9 条件反转（== ⇒ !=）", invert_eq, invert_eq_want);
+    check_ir("O9 不得匹配：L1 被多处引用", multi_ref, multi_ref);
+    check_ir("O9 空 BODY", empty_body, empty_body_want);
+    check_ir("O9 条件取值模板（断言不误杀）", cond_value_prog, cond_value_want);
 }
 
 /* ── abort 子模式：每一种都必须让 optimizeIR 诊断 + abort ────────────────
@@ -723,6 +859,10 @@ int main(int argc, char **argv) {
     test_is_temp();
     test_count_uses();
     test_temp_def_count();
+    /* 控制流用例先于 O3/O4 的负例跑：若 O6 的引用计数被改坏，先看到
+     * “O6 IF 引用不删”这条 FAIL，而不是后面某个夹具因标号被误删而 abort
+     * （abort 会截断输出，掩盖真正的变异点）。 */
+    test_control_flow();
     test_noop();
     test_const_fold();
     test_algebra();

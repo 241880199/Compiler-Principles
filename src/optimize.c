@@ -209,6 +209,25 @@ static void tempViolation(const char *name, const char *what, int index,
     abort();
 }
 
+/* 操作数是否是名为 name 的标号（OP_LABEL）。 */
+static int labelIsNamed(Operand o, const char *name) {
+    return o && o->kind == OP_LABEL && o->name && strcmp(o->name, name) == 0;
+}
+
+/* 从 from（含）向后、在**同一函数内**找 `LABEL lab :`；遇到下一个 FUNCTION 即停。
+ * 只用于单赋值例外的 O9 形态判定（见 isCondValuePair 的第二条分支）。 */
+static int labelDefinedAfter(InterCodeList *hh, InterCodeList *from, Operand lab) {
+    InterCodeList *p;
+    if (!lab || lab->kind != OP_LABEL || !lab->name) return 0;
+    for (p = from; p != hh; p = p->next) {
+        if (p->code && p->code->kind == IR_FUNCTION) return 0;
+        if (p->code && p->code->kind == IR_LABEL &&
+            labelIsNamed(p->code->u.one.x, lab->name))
+            return 1;
+    }
+    return 0;
+}
+
 /* 指导书表 2“条件表达式作为值”模板（translateCondAsValue）的例外：
  *
  *     t := #0
@@ -225,21 +244,31 @@ static void tempViolation(const char *name, const char *what, int index,
  * 例外判据**刻意收得很窄**，以保住断言的判别力：
  *   · 恰好是第二次定义（第三次起一律 abort）；
  *   · 上一次是 `t := #0`，这一次是 `t := #1`；
- *   · 两次定义之间跨过至少一个 LABEL，**且本次定义的前一条指令就是 LABEL**
- *     （真实模板是 `LABEL l_true :` 紧跟 `t := #1`；只要求“中间有 LABEL”会放过
- *     `t := #0 … LABEL x … 别的代码 … t := #1`）；
- *   · 同一函数。
+ *   · 同一函数；
+ *   · 两种合法形态之一：
+ *       (a) 两次定义之间跨过至少一个 LABEL，**且本次定义的前一条指令就是 LABEL**
+ *           （真实模板是 `LABEL l_true :` 紧跟 `t := #1`；只要求“中间有 LABEL”会放过
+ *           `t := #0 … LABEL x … 别的代码 … t := #1`）；
+ *       (b) **Task 19 的 O9 之后**：前一条指令是 `IF … GOTO L`，且 L 在同一函数内、
+ *           位于本次定义之后。O9 把 `IF c GOTO l_true / GOTO l_false / LABEL l_true /
+ *           t := #1 / LABEL l_false` 改写成 `IF !c GOTO l_false / t := #1 /
+ *           LABEL l_false` —— 原模板的 LABEL 被删掉，但“条件成立时才执行 t := #1”
+ *           的语义与形状都没变。没有这一分支，任何含条件取值表达式的真实程序都会在
+ *           O9 之后被后置断言误杀。判据仍是“IF 确实跳过本次定义”（向后找目标标号），
+ *           不接受向后跳或目标不在本函数的 IF。
  * 其余任何第二次赋值（包括本单测的 `t1 := #5` / `t1 := #6`）仍然响亮 abort。 */
 static int isCondValuePair(const TempDef *d, InterCode *c,
-                           int labelCount, int funcSerial, int prevKind) {
-    return d->defs == 1 &&
-           d->lastDefIsConst && d->lastDefConst == 0 &&
-           labelCount > d->labelCountAtDef &&
-           prevKind == IR_LABEL &&
-           funcSerial == d->funcSerialAtDef &&
-           c->kind == IR_ASSIGN &&
-           c->u.assign.y && c->u.assign.y->kind == OP_CONST &&
-           c->u.assign.y->value == 1;
+                           int labelCount, int funcSerial, int prevKind,
+                           int guardedByIf) {
+    if (d->defs != 1 ||
+        !d->lastDefIsConst || d->lastDefConst != 0 ||
+        funcSerial != d->funcSerialAtDef ||
+        c->kind != IR_ASSIGN ||
+        !c->u.assign.y || c->u.assign.y->kind != OP_CONST ||
+        c->u.assign.y->value != 1)
+        return 0;
+    return (prevKind == IR_LABEL && labelCount > d->labelCountAtDef) ||
+           guardedByIf;
 }
 
 /* 顺序扫描整条 IR：
@@ -253,7 +282,7 @@ static int isCondValuePair(const TempDef *d, InterCode *c,
  *   仍然响亮 abort。
  * 诊断尽量点名变量、指令序号与所在函数。 */
 static void assertTempsSingleAssign(InterCodeList *h) {
-    InterCodeList *hh = irHead(h), *p;
+    InterCodeList *hh = irHead(h), *p, *prevNode = NULL;
     TempDefTable defined;
     const char *func = NULL;
     int index = 0, labelCount = 0, funcSerial = 0, prevKind = -1;
@@ -264,15 +293,20 @@ static void assertTempsSingleAssign(InterCodeList *h) {
         InterCode *c = p->code;
         Operand def;
         Operand reads[3];
-        int n, i;
+        int n, i, guardedByIf = 0;
 
         index++;
-        if (!c) { prevKind = -1; continue; }
+        if (!c) { prevKind = -1; prevNode = p; continue; }
         if (c->kind == IR_FUNCTION) {
             funcSerial++;
             if (c->u.one.x && c->u.one.x->name) func = c->u.one.x->name;
         }
         if (c->kind == IR_LABEL) labelCount++;
+
+        /* O9 后的条件取值模板：前一条 IF 必须向后跳过本次定义（目标标号在本函数
+         * 内、位于本次定义之后），才承认这是“条件赋值”，见 isCondValuePair(b)。 */
+        if (prevNode && prevNode->code && prevNode->code->kind == IR_IF)
+            guardedByIf = labelDefinedAfter(hh, p, prevNode->code->u.iff.z);
 
         /* 先检查读：定义尚未登记，故 `t := t`（首次出现）会在这里被抓住。
          * READ 的自读（x 同时是定义）豁免。 */
@@ -296,7 +330,8 @@ static void assertTempsSingleAssign(InterCodeList *h) {
                 d->lastDefIsConst = (c->kind == IR_ASSIGN &&
                                      c->u.assign.y && c->u.assign.y->kind == OP_CONST);
                 d->lastDefConst = d->lastDefIsConst ? c->u.assign.y->value : 0;
-            } else if (isCondValuePair(d, c, labelCount, funcSerial, prevKind)) {
+            } else if (isCondValuePair(d, c, labelCount, funcSerial, prevKind,
+                                       guardedByIf)) {
                 d->defs = 2;
                 d->labelCountAtDef = labelCount;
                 d->lastDefIsConst = 1;
@@ -307,6 +342,7 @@ static void assertTempsSingleAssign(InterCodeList *h) {
         }
 
         prevKind = c->kind;
+        prevNode = p;
     }
 }
 
@@ -659,10 +695,300 @@ static int passInlineConst(InterCodeList *h) {
  *  Task 16 建框架；Task 17 填 O1/O2，Task 18 填 O3/O4，Task 19 填其余。
  * ============================================================================ */
 
+/* ============================================================================
+ *  O6–O9 控制流精简（Task 19）
+ *
+ *  规则（与 task-19-brief.md 的表逐条对应）：
+ *    O6  `LABEL L :` 且全程序无 GOTO.l / IF….z / CALL.f 指向 L ⇒ 删标号；
+ *    O7  `GOTO L` 的下一条**指令**就是 `LABEL L :`            ⇒ 删 GOTO；
+ *    O8  `GOTO L1` 且 `LABEL L1 :` 的下一条是 `GOTO L2`
+ *        （L2 有**同函数**定义）                              ⇒ 第一条改成 GOTO L2；
+ *    O9  `IF c GOTO L1 / GOTO L2 / LABEL L1 : / BODY / LABEL L2 :`
+ *        且 L1 全程序只被这一条 IF 引用                        ⇒ `IF !c GOTO L2 / BODY /
+ *        LABEL L2 :`（删 GOTO L2 与 LABEL L1）。
+ *
+ *  ★ 动态 vs 静态（不许夸大）：
+ *    · O9 是**唯一**减少**动态**执行条数的一条：每走一次假分支省 1 条（那条 GOTO L2）。
+ *      真分支路径执行条数不变（省掉的 GOTO 本来就不走）。
+ *    · O6 每“落入”一次省 1 条；O8 每执行一次省 1 条（少一次中转跳转）。
+ *    · **O7 的动态收益是 0**：删掉 GOTO L 后控制流落入下一条 `LABEL L`，省的 1 条
+ *      GOTO 被多计入的 1 条 LABEL 抵消（虚拟机里 LABEL 也是一条指令）。它只降静态行数。
+ *
+ *  ★ 边界：所有标号查找/改写都在**同一 FUNCTION 内**；遇到下一个 FUNCTION 即停。
+ *    翻译层的标号名当前全局唯一，但优化器不依赖这一点。
+ *  ★ O8 防环：`LABEL L1: GOTO L2` + `LABEL L2: GOTO L1` 会让一步改写来回翻转。
+ *    改写前沿 L2 的 `LABEL→GOTO` 链走一遍（最多 64 步；回到 L1 或出现重复标签即
+ *    判定有环）并跳过。没有这道闸，环上的改写会在本 pass 的“改一次就重扫”里
+ *    永远转下去（实测是挂起，不是外层 20 轮警告）——见 task-19-report.md 的变异 3。
+ * ============================================================================ */
+
+/* O6 的引用计数：GOTO.x / IF.z 按 OP_LABEL 比；CALL.f 是 **OP_FUNC**，只按名字比。
+ * 全程序计数是保守的（安全）：跨函数同名也会被算作引用，因此宁可不删。
+ * LABEL / FUNCTION 定义本身不是引用。 */
+static int labelRefCount(InterCodeList *hh, const char *name) {
+    InterCodeList *p;
+    int n = 0;
+
+    if (!hh || !name) return 0;
+    for (p = hh->next; p != hh; p = p->next) {
+        InterCode *c = p->code;
+        if (!c) continue;
+        switch (c->kind) {
+        case IR_GOTO:
+            if (labelIsNamed(c->u.one.x, name)) n++;
+            break;
+        case IR_IF:
+            if (labelIsNamed(c->u.iff.z, name)) n++;
+            break;
+        case IR_CALL:
+            /* CALL.f 是 OP_FUNC，不能用 operandEqual 去比 OP_LABEL。 */
+            if (c->u.call.f && c->u.call.f->name &&
+                strcmp(c->u.call.f->name, name) == 0)
+                n++;
+            break;
+        default:
+            break;
+        }
+    }
+    return n;
+}
+
+/* p 所在函数区域的起点（含 `FUNCTION` 结点本身）；没有 FUNCTION 时是第一条指令。
+ * 区域 = 一个 FUNCTION 结点直到下一个 FUNCTION 之前。 */
+static InterCodeList *funcRegionStart(InterCodeList *hh, InterCodeList *p) {
+    InterCodeList *q = p;
+
+    if (p->code && p->code->kind == IR_FUNCTION) return p;
+    while (q->prev != hh && q->prev->code &&
+           q->prev->code->kind != IR_FUNCTION)
+        q = q->prev;
+    if (q->prev != hh && q->prev->code &&
+        q->prev->code->kind == IR_FUNCTION)
+        return q->prev;
+    return q;
+}
+
+/* 区域终点（**不含**）：下一个 FUNCTION 结点，或哨兵。 */
+static InterCodeList *funcRegionEnd(InterCodeList *hh, InterCodeList *p) {
+    InterCodeList *q = p;
+
+    while (q->next != hh &&
+           !(q->next->code && q->next->code->kind == IR_FUNCTION))
+        q = q->next;
+    return q->next;
+}
+
+/* 在 at 所在函数内找 `LABEL name :`（可在 at 之前或之后）。 */
+static InterCodeList *findLabelInFunc(InterCodeList *hh, InterCodeList *at,
+                                      const char *name) {
+    InterCodeList *s = funcRegionStart(hh, at);
+    InterCodeList *e = funcRegionEnd(hh, at);
+    InterCodeList *p;
+
+    for (p = s; p != e; p = p->next)
+        if (p->code && p->code->kind == IR_LABEL &&
+            labelIsNamed(p->code->u.one.x, name))
+            return p;
+    return NULL;
+}
+
+/* 在 from **之后**、同一函数内找 `LABEL name :`。 */
+static InterCodeList *findLabelAfterInFunc(InterCodeList *hh, InterCodeList *from,
+                                           const char *name) {
+    InterCodeList *e = funcRegionEnd(hh, from);
+    InterCodeList *p;
+
+    for (p = from->next; p != e; p = p->next)
+        if (p->code && p->code->kind == IR_LABEL &&
+            labelIsNamed(p->code->u.one.x, name))
+            return p;
+    return NULL;
+}
+
+#define GOTO_CHAIN_MAX 64
+
+/* O8 防环：沿 L2 的 `LABEL cur : GOTO next` 链前看。
+ *   · 回到 L1、重复标签、或超过 64 步 ⇒ 有环/不收敛 ⇒ 返回 0（跳过这次改写）；
+ *   · 链在“无 LABEL 定义”或“下一条不是 GOTO”处终止 ⇒ 返回 1（安全）。
+ * L1 == L2 的自环也在第一步就拒绝。 */
+static int gotoChainSafe(InterCodeList *hh, InterCodeList *at,
+                         const char *l1, const char *l2) {
+    const char *seen[GOTO_CHAIN_MAX];
+    const char *cur = l2;
+    int n = 0, steps = 0;
+
+    if (!l1 || !l2 || strcmp(l1, l2) == 0) return 0;
+    while (steps++ < GOTO_CHAIN_MAX) {
+        InterCodeList *lab;
+        InterCode *nextc;
+        int i;
+
+        for (i = 0; i < n; i++)
+            if (strcmp(seen[i], cur) == 0) return 0;   /* 重复标签 ⇒ 环 */
+        if (strcmp(cur, l1) == 0) return 0;            /* 回到源标号 ⇒ 环 */
+        seen[n++] = cur;
+
+        lab = findLabelInFunc(hh, at, cur);
+        if (!lab || lab->next == hh || !lab->next->code) return 1;
+        nextc = lab->next->code;
+        if (nextc->kind != IR_GOTO || !nextc->u.one.x ||
+            nextc->u.one.x->kind != OP_LABEL || !nextc->u.one.x->name)
+            return 1;                                  /* 链在此终止 */
+        cur = nextc->u.one.x->name;
+    }
+    return 0;                                          /* 太长：保守跳过 */
+}
+
+/* O7 + O8：处理一个就从头重扫（deleteCode/改写后迭代器失效）。 */
+static int passGotoSimplify(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (;;) {
+        int did = 0;
+        for (p = hh->next; p != hh; p = p->next) {
+            InterCode *c = p->code;
+            Operand tgt;
+            InterCodeList *q;
+
+            if (!c || c->kind != IR_GOTO) continue;
+            tgt = c->u.one.x;
+            if (!tgt || tgt->kind != OP_LABEL || !tgt->name) continue;
+            q = p->next;
+
+            /* O7：下一条指令就是 `LABEL L :` ⇒ 删 GOTO（动态收益 0，见上）。 */
+            if (q != hh && q->code && q->code->kind == IR_LABEL &&
+                labelIsNamed(q->code->u.one.x, tgt->name)) {
+                deleteCode(p);
+                changed++;
+                did = 1;
+                break;
+            }
+
+            /* O8：`LABEL L1 :` 的下一条是 `GOTO L2` ⇒ GOTO L1 改成 GOTO L2。
+             * L1/L2 都必须在同一函数内有定义；防环后再改。 */
+            {
+                InterCodeList *l1node = findLabelInFunc(hh, p, tgt->name);
+                InterCodeList *g;
+                InterCode *gc;
+                Operand l2op;
+
+                if (!l1node) continue;
+                g = l1node->next;
+                if (g == hh || !g->code || g->code->kind != IR_GOTO) continue;
+                gc = g->code;
+                l2op = gc->u.one.x;
+                if (!l2op || l2op->kind != OP_LABEL || !l2op->name) continue;
+                if (!findLabelInFunc(hh, p, l2op->name)) continue;
+                if (!gotoChainSafe(hh, p, tgt->name, l2op->name)) continue;
+
+                /* 复用 GOTO L2 的 OP_LABEL 操作数（操作数共享是允许的）。 */
+                c->u.one.x = l2op;
+                changed++;
+                did = 1;
+                break;
+            }
+        }
+        if (!did) break;
+    }
+    return changed;
+}
+
+/* 关系取反表：`<`↔`>=`、`<=`↔`>`、`==`↔`!=`。
+ * 编码见 ir.h：0=<, 1=<=, 2=>, 3=>=, 4===, 5=!=。 */
+static int invertRelop(int code) {
+    switch (code) {
+    case 0: return 3;   /* <  ⇒ >= */
+    case 1: return 2;   /* <= ⇒ >  */
+    case 2: return 1;   /* >  ⇒ <= */
+    case 3: return 0;   /* >= ⇒ <  */
+    case 4: return 5;   /* == ⇒ != */
+    case 5: return 4;   /* != ⇒ == */
+    default:
+        fprintf(stderr, "internal error: bad relop code %d in O9\n", code);
+        abort();
+    }
+}
+
+/* O9：条件反转 + fall-through（唯一减少动态条数的一条；假分支省 1 条）。 */
+static int passCondInvert(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (;;) {
+        int did = 0;
+        for (p = hh->next; p != hh; p = p->next) {
+            InterCode *c = p->code;
+            InterCodeList *g, *l1node, *l2node;
+            InterCode *gc, *lc;
+            Operand l1op, l2op;
+
+            if (!c || c->kind != IR_IF) continue;
+            g = p->next;
+            if (g == hh || !g->code || g->code->kind != IR_GOTO) continue;
+            l1node = g->next;
+            if (l1node == hh || !l1node->code ||
+                l1node->code->kind != IR_LABEL) continue;
+
+            gc = g->code;
+            lc = l1node->code;
+            l1op = lc->u.one.x;
+            l2op = gc->u.one.x;
+            if (!l1op || l1op->kind != OP_LABEL || !l1op->name) continue;
+            if (!l2op || l2op->kind != OP_LABEL || !l2op->name) continue;
+            if (strcmp(l1op->name, l2op->name) == 0) continue;
+
+            /* L1 只能被这一条 IF 引用；否则删掉 LABEL 会改变别的跳转。 */
+            if (labelRefCount(hh, l1op->name) != 1) continue;
+
+            /* L2 的 LABEL 必须在本函数内、L1 之后；找不到则模式不成立。 */
+            l2node = findLabelAfterInFunc(hh, l1node, l2op->name);
+            if (!l2node) continue;
+
+            /* IF 翻转并改指 L2；再删 `GOTO L2` 与 `LABEL L1 :`。 */
+            c->u.iff.relop = invertRelop(c->u.iff.relop);
+            c->u.iff.z = l2op;          /* 复用 OP_LABEL; 名称即 L2 */
+            deleteCode(g);              /* 先删中间那条 GOTO L2 */
+            deleteCode(l1node);         /* 再删 LABEL L1 */
+            changed++;
+            did = 1;
+            break;                      /* 链表已变，从头重扫 */
+        }
+        if (!did) break;
+    }
+    return changed;
+}
+
+/* O6：无引用标号删除。**最后跑**（O7/O9 会制造出新的无引用标号）。
+ * 删除后从表头重扫；count 在每次删除后重算，故不需要维护引用表。 */
+static int passDeadLabel(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (;;) {
+        int did = 0;
+        for (p = hh->next; p != hh; p = p->next) {
+            InterCode *c = p->code;
+            Operand lab;
+
+            if (!c || c->kind != IR_LABEL) continue;
+            lab = c->u.one.x;
+            if (!lab || lab->kind != OP_LABEL || !lab->name) continue;
+            if (labelRefCount(hh, lab->name) != 0) continue;
+            deleteCode(p);
+            changed++;
+            did = 1;
+            break;
+        }
+        if (!did) break;
+    }
+    return changed;
+}
+
 static int passesChanged;
-static int passDeadLabel(InterCodeList *h)   { (void)h; return 0; }
-static int passGotoSimplify(InterCodeList *h){(void)h; return 0; }
-static int passCondInvert(InterCodeList *h)  { (void)h; return 0; }
 
 void optimizeIR(InterCodeList *head) {
     int rounds = 0;
