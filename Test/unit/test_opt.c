@@ -10,7 +10,7 @@
  *   7) 临时变量单赋值断言“会响”：8 个 abort 子模式（重复赋值 / 赋值前使用 /
  *      条件取值例外的 6 种反例）必须诊断 + abort。
  *   8) O4 结果直达（ASSIGN/ARITH 源、链式；使用两次 / 两次定义 / 非拷贝 / ADDR、
- *      ASSIGN_DEREF 源均不得匹配）；
+ *      ASSIGN_DEREF 源均不得匹配）与 O5 冗余拷贝消除（x := x 删除，后续赋值保留）；
  *   9) O3 立即数内联（ASSIGN/ARITH/RETURN/DEREF_ASSIGN.y；解引用基址、&t、PARAM、
  *      READ 目标、条件取值模板均逐字节不变）。
  *
@@ -518,6 +518,20 @@ static void test_copy_prop(void) {
     static const char *const chain_want[] = {
         "v1 := #5", "RETURN v1", NULL
     };
+    /* O5：自拷贝直接删除（brief Step 2 第一条）。 */
+    static const char *const self_copy_src[] = {
+        "v1 := v1", "RETURN v1", NULL
+    };
+    static const char *const self_copy_want[] = {
+        "RETURN v1", NULL
+    };
+    /* O5 只删自拷贝：后面的正常赋值必须原样保留。 */
+    static const char *const self_copy_then_assign_src[] = {
+        "FUNCTION f :", "v1 := v1", "v1 := #5", "RETURN v1", NULL
+    };
+    static const char *const self_copy_then_assign_want[] = {
+        "FUNCTION f :", "v1 := #5", "RETURN v1", NULL
+    };
 
     /* 不得匹配 1：t 被读两次（一处紧邻拷贝 + 一处后续拷贝）。
      * 去掉 irCountOperandUses == 1 后，O4 会删掉 t 的定义并在后置断言处 abort。 */
@@ -551,6 +565,9 @@ static void test_copy_prop(void) {
     check_ir("O4 变量 rhs（O3 不参与）", var_src, var_want);
     check_ir("O4 ARITH 结果直达", arith_src, arith_want);
     check_ir("O4 链式拷贝（固定点）", chain_src, chain_want);
+    check_ir("O5 自拷贝 x := x", self_copy_src, self_copy_want);
+    check_ir("O5 只删自拷贝，后续赋值保留",
+             self_copy_then_assign_src, self_copy_then_assign_want);
     check_ir("O4 不得匹配：t 被使用两次", use_twice, use_twice);
     check_ir("O4 不得匹配：两次使用都在算术里", use_twice_arith, use_twice_arith);
     check_ir("O4 不得匹配：t 有两次定义", two_defs, two_defs);

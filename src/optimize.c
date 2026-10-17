@@ -600,9 +600,14 @@ static void noteRewrite(const char *pass, int changed) {
 }
 
 /* ============================================================================
- *  O4 结果直达（Task 18）
+ *  O4 结果直达（Task 18）+ O5 冗余拷贝消除（Task 22b）
  *
- *  紧邻两条：
+ *  O5：`x := x`（两边都是同一个 OP_VAR）⇒ 删除。
+ *  只处理 OP_VAR 同名：临时变量 `t := t` 若首次出现会被 assertTempsSingleAssign
+ *  按“赋值前使用”拦下，若第二次定义会被“重复赋值”拦下，故 O5 实际只作用于
+ *  非临时变量（`vN := vN` 等）。与 O4 共用 PER_PASS_REWRITE_MAX 防御上限。
+ *
+ *  O4 紧邻两条：
  *      t := <rhs>        ← t 是临时变量
  *      x := t            ← 下一条 IR_ASSIGN，且 y 恰为 t
  *  ⇒ 第二条整体改成第一条的计算、目的地换成 x，删除第一条。
@@ -631,6 +636,19 @@ static int passCopyProp(InterCodeList *h) {
             InterCodeList *q = p->next;
             Operand t, x;
             InterCode moved;
+
+            /* O5：x := x（两边都是同一个 OP_VAR）⇒ 删除。先于 O4 处理：
+             * 自拷贝不依赖使用计数，也没有可搬走的 rhs。 */
+            if (c && c->kind == IR_ASSIGN &&
+                c->u.assign.x && c->u.assign.y &&
+                c->u.assign.x->kind == OP_VAR && c->u.assign.y->kind == OP_VAR &&
+                strcmp(c->u.assign.x->name, c->u.assign.y->name) == 0) {
+                deleteCode(p);
+                changed++;
+                noteRewrite("O5 冗余拷贝", changed);
+                did = 1;
+                break;
+            }
 
             if (!c || (c->kind != IR_ASSIGN && !isArith(c))) continue;
             t = (c->kind == IR_ASSIGN) ? c->u.assign.x : c->u.binop.x;
