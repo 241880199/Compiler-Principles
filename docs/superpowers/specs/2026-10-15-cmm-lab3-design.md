@@ -486,7 +486,7 @@ cc <输入文件>              # 中间代码写 stdout（兼容参考 Makefile 
   `Test/unit/test_struct.sh` 的断言口径一致。）
 - **实验三不再向 stdout 打印语法树**（见 §11 P7）。实验一的语法树输出是为了实验一的评测；
   实验三的输出契约是"中间代码"，两者混在一起会让 `./parser in out` 的产物无法判定。
-  语法树打印保留在代码里，由编译期开关 `LAB3_PRINT_TREE`（默认 `0`）控制。
+  实现中不再调用语法树打印，也**没有** `LAB3_PRINT_TREE` 编译期开关。
 
 ---
 
@@ -580,10 +580,10 @@ stdout 行为回到实验二 —— **既有期望值一个都不用改**。见�
 | P1 | `/` 的语义（虚拟机是 `//` 整除，C 是向零截断） | 以**虚拟机**为准：优化时按向下取整折叠 | `optimize.c` 一处常量折叠分支 + §9.2 垫片一处 | `opt/div-neg` |
 | P2 | `write` 是否产生 `place := #0` | `place == NULL` 时不产生 | `translate.c` 的 `write` 分支 | `basic/write-stmt` |
 | P3 | 赋值表达式的值是否必须落地 | 仅当 `place != NULL` 时补 `place := variable` | `translate.c` 的 `ASSIGNOP` 分支 | `basic/chain-assign` |
-| P4 | 未实现 3.1 时的提示与输出文件 | 打印规定英文提示，**不写**输出文件，退出码 0 | `translate.c` 入口一处 | `req/struct-sample` |
+| P4 | 未实现 3.1 时的提示与输出文件 | 打印规定英文提示，输出文件**存在但为空**（0 字节，不写中间代码），退出码 0 | `translate.c` 入口一处 | `req/struct-sample` |
 | P5 | 一维数组作参数时形参是否 `DEC` | 不 `DEC`（形参本身就是地址） | `translate.c` 的 `ParamDec` 分支 | `arrnd/arrparam` |
 | P6 | 变量/标号命名风格 | `v*/t*/label*`（要求书明说非强制） | `ir.c` 一处 | 全部用例 |
-| P7 | 实验三是否仍向 stdout 打印语法树 | **不打印**（要求书 4.1.2/4.1.3 的输出契约只有中间代码）；保留代码、由 `LAB3_PRINT_TREE` 控制 | `main.c` 一处 | `basic/hello` 的 stdout 必须为空 |
+| P7 | 实验三是否仍向 stdout 打印语法树 | **不打印**（要求书 4.1.2/4.1.3 的输出契约只有中间代码）；代码保留但不再调用，无编译期开关 | `main.c` 一处 | `basic/hello` 的 stdout 必须为空 |
 | P8 | `place` 与条件里读到的操作数**同名**（`x = !x;`／`x = x > 0;`／`x = x && y;`）时的求值次序 | **先清后读**：照指导书表 2 模板 `code0 = [place := #0]` 排在最前，条件再惰性读操作数，于是读到的是刚清掉的 0（**与 C 语义不同**）；等评测反馈再定，改动前必须先确认判分口径 | `translate.c` 的 `translateCondAsValue` + `translateCond` 的 `EX_ID` 惰性读 | `Test/unit/test_cond.c` 的 `x = !x;` |
 
 每条都必须：**行为收敛在代码里的一个位置**、那个位置**带注释点明"要求书未规定，见 spec §11 第 N 条"**、
