@@ -226,29 +226,40 @@ const char *varNameOf(const char *src) {
     return varMap[varMapN - 1].ir;
 }
 
-/* 重置三个计数器与变量映射表。**只给单测用**（见 translate.h 的说明）：同一进程里
- * 连着跑多个用例时不清零的话，编号会接着上个用例往下走，期望值算不出来、也没法读。
+/* 清空局部变量名/类型映射，但**不**重置 varSeq/tmpSeq/labelSeq。
  *
- * 表里 xstrdup 出来的字符串在这里一并 free —— 不释放的话每个用例泄漏一批，且槽位里
- * 留着上个用例的内容，调试时看变量表会被误导。释放是安全的：调用方（opVar）拿到名字
- * 时会**自己再复制一份**放进 IR，产物里的操作数不指向这里的字符串；真实编译流程只在
- * 进程开头调它一次（或根本不调），那时表是空的，循环不做事。 */
-void translateResetNames(void) {
+ * 每个函数翻译前调用一次：语义层按**函数作用域**判断重定义，故不同函数里出现同名
+ * 局部变量是合法的；翻译层的表若一直扁平累积，第二个 `int x` 会在 registerVarType
+ * 里响亮 abort（IR 全空）。清掉映射后每个函数都有自己的"源码名 -> vN/Type"，
+ * 同名变量各用各的 `vN`。计数器**不**清：编号继续单调增长，唯一命名程序的
+ * varNameOf 调用顺序未变，IR 逐字节不变。
+ *
+ * 表里 xstrdup 出来的字符串一并 free。释放是安全的：调用方（opVar）拿到名字时
+ * 会**自己再复制一份**放进 IR，产物里的操作数不指向这里的字符串。 */
+static void clearFunctionVarMaps(void) {
     int i;
     for (i = 0; i < varMapN; i++) {
         free((void *)varMap[i].src);
         free((void *)varMap[i].ir);
     }
+    varMapN = 0;
     /* 类型登记表一并清空（同 varMap）。**只 free 名字**；Type 对象是 type.c 用
      * xmalloc 建的一次性结构，本文件不拥有、也不在别处释放 —— 与整个编译器
      * "一次进程、退出即回收"的既有口径一致，别在这里顺手加一套递归 free。 */
     for (i = 0; i < varTypesN; i++) free((void *)varTypes[i].name);
-    /* 函数名保留表一并清空。名字是 xstrdup 的，故也要 free —— 避免同一进程里
-     * 连续跑多个用例时泄漏并把上个用例的函数名留在表里（会让新用例的标号
-     * 无谓地跳过那些名字）。 */
-    for (i = 0; i < reservedFuncNamesN; i++) free(reservedFuncNames[i]);
-    tmpSeq = labelSeq = varSeq = varMapN = 0;
     varTypesN = 0;
+}
+
+/* 重置三个计数器与变量映射表。**只给单测用**（见 translate.h 的说明）：同一进程里
+ * 连着跑多个用例时不清零的话，编号会接着上个用例往下走，期望值算不出来、也没法读。
+ * 变量映射的清理复用 clearFunctionVarMaps；函数名保留表也要清 —— 名字是 xstrdup
+ * 的，不 free 会泄漏并把上个用例的函数名留在表里（会让新用例的标号无谓地跳过
+ * 那些名字）。 */
+void translateResetNames(void) {
+    int i;
+    clearFunctionVarMaps();
+    for (i = 0; i < reservedFuncNamesN; i++) free(reservedFuncNames[i]);
+    tmpSeq = labelSeq = varSeq = 0;
     reservedFuncNamesN = 0;
 }
 
@@ -1460,6 +1471,12 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e) {
 
     { InterCode *c = newCode(IR_FUNCTION); c->u.one.x = opFunc(fname);
       tail = irAppend(tail, c); }
+
+    /* ★ 每个函数独立的局部变量映射：语义层按函数作用域放行不同函数中的同名
+     *   局部变量，翻译层的扁平表必须在这里清空，否则第二个同名 `int x` 会在
+     *   registerVarType 里 abort。**不清计数器**：vN 继续全局单调，唯一命名
+     *   程序的 IR 编号不受影响。 */
+    clearFunctionVarMaps();
 
     /* 形参：按声明顺序发 PARAM。`FunDec : ID LP RP`（无参）时 child[2] 是 RP，
      * 故只在 nchild == 4 时走进去，且进去前确认它真是 VarList。 */

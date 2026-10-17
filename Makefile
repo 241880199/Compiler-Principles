@@ -416,6 +416,14 @@ label-test: parser
 forward-test: parser
 	@bash scripts/run_lab3.sh Test/unit/forward_call.cmm && echo "PASS forward-test"
 
+# ── 不同函数中的同名局部变量（A-3 第二项）────────────────────────────────────
+# 语义层按函数作用域放行 `int x` 出现在多个函数里；翻译层每个函数必须清空
+# "源码名 -> vN/Type"的扁平映射（计数器不清），否则 registerVarType 响亮 abort、
+# 无 IR。变异自证：去掉 translateExtDef 里的 clearFunctionVarMaps() ⇒
+# run_lab3.sh 以"parser 未产出 IR"判红。
+duplicate-locals-test: parser
+	@bash scripts/run_lab3.sh Test/unit/duplicate_locals.cmm && echo "PASS duplicate-locals-test"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -429,7 +437,7 @@ forward-test: parser
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
         cond-test prog-test call-test arr-test builtin-test struct-test \
-        array-guard-test label-test forward-test
+        array-guard-test label-test forward-test duplicate-locals-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
