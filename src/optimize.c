@@ -445,15 +445,221 @@ static int passAlgebra(InterCodeList *h) {
 }
 
 /* ============================================================================
+ *  读使用位置口径（O3/O4 共用，**只有这一张表**）
+ *
+ *  哪些位置是“读”、其中哪些**不能**被常量替换，集中在这里判断；O3/O4 不另写一份。
+ *
+ *  可替换（可内联）的读位置：
+ *      IR_ASSIGN.y
+ *      IR_ADD/SUB/MUL/DIV.y、z
+ *      IR_DEREF_ASSIGN.y        （`*x := t` 的值）
+ *      IR_IF.x、y
+ *      IR_GOTO/RETURN/ARG/WRITE.x
+ *
+ *  **不可替换**的读位置（硬性排除；替换后会产出非法 IR 或改变语义）：
+ *      IR_ASSIGN_DEREF.y        （`place := *t` 的基址）
+ *      IR_DEREF_ASSIGN.x        （`*t := y` 的基址）
+ *      IR_ADDR.y                （`x := &t`，会打成 `&#5`）
+ *      IR_PARAM.x               （`PARAM #5` 会被参考机装载器拒绝）
+ *      IR_READ.x                （目标位置，不是可替换的读；替换会让 t 变成第二次定义）
+ *
+ *  目标位置（ASSIGN.x / ARITH.x / CALL.x / DEC.x）本来就不是读，绝不替换。
+ *  ★ IR_READ.x 在 codeReadOperands 里**同时**计作读（用于使用计数），
+ *    但在这里是“不可替换”；两件事分开判断，勿合并。
+ *
+ *  所有操作都以 operandEqual 为准（按 kind 比较，变量比名字）。
+ * ============================================================================ */
+
+/* 检查 c 中操作数 from 的一处读位置。
+ * canReplace 为真且 to 非 NULL 时就地替换；total 与 blocked 累加计数。 */
+static void noteReadUse(Operand *slot, Operand from, Operand to, int canReplace,
+                        int *total, int *blocked) {
+    if (!slot || !*slot || !operandEqual(*slot, from)) return;
+    (*total)++;
+    if (!canReplace) {
+        (*blocked)++;
+        return;
+    }
+    if (to) *slot = to;
+}
+
+/* 遍历 c 中 from 的每一处**读**；to 非 NULL 时把可替换位置改成 to。
+ * 返回读出现总次数（与 codeReadOperands 的口径一致）；*blocked 累加其中
+ * 落在“不可替换”位置的次数。 */
+static int scanReadUses(InterCode *c, Operand from, Operand to, int *blocked) {
+    int total = 0;
+
+    if (!c || !from) return 0;
+    switch (c->kind) {
+    case IR_ASSIGN:
+        noteReadUse(&c->u.assign.y, from, to, 1, &total, blocked);
+        break;
+    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV:
+        noteReadUse(&c->u.binop.y, from, to, 1, &total, blocked);
+        noteReadUse(&c->u.binop.z, from, to, 1, &total, blocked);
+        break;
+    case IR_ADDR:
+        noteReadUse(&c->u.assign.y, from, to, 0, &total, blocked);
+        break;
+    case IR_ASSIGN_DEREF:
+        noteReadUse(&c->u.deref.y, from, to, 0, &total, blocked);
+        break;
+    case IR_DEREF_ASSIGN:
+        noteReadUse(&c->u.deref.x, from, to, 0, &total, blocked);  /* 基址 */
+        noteReadUse(&c->u.deref.y, from, to, 1, &total, blocked);  /* 值 */
+        break;
+    case IR_IF:
+        noteReadUse(&c->u.iff.x, from, to, 1, &total, blocked);
+        noteReadUse(&c->u.iff.y, from, to, 1, &total, blocked);
+        noteReadUse(&c->u.iff.z, from, to, 0, &total, blocked);    /* 标号目标 */
+        break;
+    case IR_GOTO: case IR_RETURN: case IR_ARG: case IR_WRITE:
+        noteReadUse(&c->u.one.x, from, to, 1, &total, blocked);
+        break;
+    case IR_PARAM: case IR_READ:
+        noteReadUse(&c->u.one.x, from, to, 0, &total, blocked);
+        break;
+    case IR_CALL: case IR_LABEL: case IR_FUNCTION: case IR_DEC:
+        break;   /* CALL.x 是定义；函数名/标号/声明都不是读 */
+    }
+    return total;
+}
+
+/* 把 c 中 from 的所有**可替换**读位置改成 to，返回替换条数。 */
+static int replaceReadOperand(InterCode *c, Operand from, Operand to) {
+    int blocked = 0;
+    int total = scanReadUses(c, from, to, &blocked);
+    return total - blocked;
+}
+
+/* 检查 c 中 t 的读使用是否都落在可内联位置：只要有不可内联的一处，
+ * 就把 *ok 置 0。返回 t 在 c 中作为读出现的次数。 */
+static int canInlineConstUse(InterCode *c, Operand t, int *ok) {
+    int blocked = 0;
+    int total = scanReadUses(c, t, NULL, &blocked);
+    if (blocked) *ok = 0;
+    return total;
+}
+
+/* ============================================================================
+ *  O4 结果直达（Task 18）
+ *
+ *  紧邻两条：
+ *      t := <rhs>        ← t 是临时变量
+ *      x := t            ← 下一条 IR_ASSIGN，且 y 恰为 t
+ *  ⇒ 第二条整体改成第一条的计算、目的地换成 x，删除第一条。
+ *
+ *  条件：
+ *    · irTempDefCount(h, t) == 1 且 irCountOperandUses(h, t) == 1；
+ *    · 源指令只允许 IR_ASSIGN 与 IR_ADD/SUB/MUL/DIV —— 后四者是设计文档 §7 的
+ *      “t := …; x := t” 本义（brief 用例 `t1 := v2 + #1 / v1 := t1` 需要它）。
+ *      IR_ADDR / IR_ASSIGN_DEREF 刻意不作 O4 的源（brief 明确排除）；
+ *      CALL / READ / DEC 也不作源（它们的“结果”不是可直接搬走的值）。
+ *    · 第二条必须 IR_ASSIGN 且 y == t；x 是目标，不参与使用计数。
+ *
+ *  只在本基本块内改紧邻两条，不跨 LABEL/FUNCTION。删除后用“从头再扫”处理同一
+ *  pass 内的链式拷贝；固定点外层继续收敛。
+ * ============================================================================ */
+
+static int passCopyProp(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (;;) {
+        int did = 0;
+        for (p = hh->next; p != hh; p = p->next) {
+            InterCode *c = p->code, *d;
+            InterCodeList *q = p->next;
+            Operand t, x;
+            InterCode moved;
+
+            if (!c || (c->kind != IR_ASSIGN && !isArith(c))) continue;
+            t = (c->kind == IR_ASSIGN) ? c->u.assign.x : c->u.binop.x;
+            if (!irIsTemp(t)) continue;
+            if (q == hh || !q->code || q->code->kind != IR_ASSIGN) continue;
+            d = q->code;
+            if (!operandEqual(d->u.assign.y, t)) continue;
+            if (irTempDefCount(hh, t) != 1) continue;
+            if (irCountOperandUses(hh, t) != 1) continue;
+
+            x = d->u.assign.x;     /* 先保存目标（union 覆盖前） */
+            moved = *c;            /* 浅拷贝；操作数共享，deleteCode 不释放它们 */
+            deleteCode(p);         /* 删除 `t := <rhs>` */
+            *d = moved;            /* 第二条改成同一计算，目的地换成 x */
+            if (d->kind == IR_ASSIGN) d->u.assign.x = x;
+            else                      d->u.binop.x = x;   /* isArith 保证 */
+            changed++;
+            did = 1;
+            break;                 /* 链表已变，从头再扫 */
+        }
+        if (!did) break;
+    }
+    return changed;
+}
+
+/* ============================================================================
+ *  O3 立即数内联（Task 18）
+ *
+ *  候选：`t := #c`（IR_ASSIGN，t 是临时变量，irTempDefCount(h, t) == 1）。
+ *  只有 t 的**所有读使用**都落在可内联位置时才处理；任何一处落在
+ *  scanReadUses 标出的不可替换位置，整个候选跳过（保留 `t := #c`）。
+ *
+ *  动作：用 opConst(c) 替换全部可内联读使用 → 删除候选 → changed++。
+ *  用“处理一个就从 head 再扫”的循环，保证删除结点后迭代器不悬垂。
+ *  条件取值模板（t 有两次定义）由 irTempDefCount == 1 整体排除。
+ * ============================================================================ */
+
+static int passInlineConst(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (;;) {
+        int did = 0;
+        for (p = hh->next; p != hh; p = p->next) {
+            InterCode *c = p->code;
+            Operand t, val;
+            InterCodeList *q;
+            int ok = 1;
+
+            if (!c || c->kind != IR_ASSIGN) continue;
+            t = c->u.assign.x;
+            val = c->u.assign.y;
+            if (!irIsTemp(t) || !val || val->kind != OP_CONST) continue;
+            if (irTempDefCount(hh, t) != 1) continue;
+
+            /* 第一遍只检查：任何一处不可内联 ⇒ 整个候选放弃。 */
+            for (q = hh->next; q != hh; q = q->next) {
+                canInlineConstUse(q->code, t, &ok);
+                if (!ok) break;
+            }
+            if (!ok) continue;
+
+            /* 第二遍替换。常量操作数可被多处共享（操作数不可变）。 */
+            {
+                Operand cst = opConst(val->value);
+                for (q = hh->next; q != hh; q = q->next)
+                    (void)replaceReadOperand(q->code, t, cst);
+            }
+            deleteCode(p);
+            changed++;
+            did = 1;
+            break;                 /* 链表已变，从头再扫 */
+        }
+        if (!did) break;
+    }
+    return changed;
+}
+
+/* ============================================================================
  *  框架：反复跑各子 pass，直到一轮下来不再有改动（不动点）
  *
  *  每个子 pass 返回**本次改动条数**；0 表示该 pass 已不动。
- *  Task 16 建框架；Task 17 填 O1/O2，Task 18–19 填其余。
+ *  Task 16 建框架；Task 17 填 O1/O2，Task 18 填 O3/O4，Task 19 填其余。
  * ============================================================================ */
 
 static int passesChanged;
-static int passCopyProp(InterCodeList *h)    { (void)h; return 0; }
-static int passInlineConst(InterCodeList *h) { (void)h; return 0; }
 static int passDeadLabel(InterCodeList *h)   { (void)h; return 0; }
 static int passGotoSimplify(InterCodeList *h){(void)h; return 0; }
 static int passCondInvert(InterCodeList *h)  { (void)h; return 0; }

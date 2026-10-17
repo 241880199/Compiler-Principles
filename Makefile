@@ -175,6 +175,23 @@ opt-abort-test: Test/unit/test_opt
 	    rm -f $$err; done; \
 	    if [ $$rc -eq 0 ]; then echo "PASS opt-abort（8 个模式均 134）"; fi; exit $$rc'
 
+# ── 优化开/关对拍（Task 18）─────────────────────────────────────────────────
+# LAB3_OPT 是**编译期宏**，不是环境变量：`LAB3_OPT=0 ./parser` 不会关掉优化。
+# 故这里单独构建一个 `-DLAB3_OPT=0` 的 parser，再用 run_lab3.sh 的 LAB3_PARSER
+# 指向它，跑同一批 *.cmm。两条链都以 .exp（参考机行为）为裁判，因此“优化未改
+# 行为”由 oracle 独立证明，而不是自己比自己。
+build/parser-noopt: $(SRCS) syntax.tab.c lex.yy.c
+	mkdir -p build
+	$(CC) $(CFLAGS) -DLAB3_OPT=0 -o $@ $(SRCS) syntax.tab.c lex.yy.c -lfl
+
+# ★ 只跑五个**真实用例组**：Test/lab3/selftest/ 下的夹具是运行台的负例
+#   （缺 .in / 缺 .exp / 故意 mismatch），递归扫 Test/lab3 必然红，不能当回归门。
+opt-off-test: build/parser-noopt
+	@set -e; for d in basic arr1d arrnd func req; do \
+	    echo "=== opt-off: Test/lab3/$$d ==="; \
+	    LAB3_PARSER="$(CURDIR)/build/parser-noopt" bash scripts/run_lab3.sh "Test/lab3/$$d"; \
+	done
+
 # AST 形状判别表单测：全项目唯一一个直接构造 Node 来钉"语法树长什么样"的用例。
 # 判别表一旦判错，错的是整棵树的语义，而错误的 IR 往往"看着挺像那么回事"，
 # 端到端（parser + 真机）测不出来，故必须有单测。
@@ -359,8 +376,8 @@ struct-test: parser
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test opt-test opt-abort-test expkind-test translate-test cond-test prog-test \
-        call-test arr-test builtin-test struct-test
+        ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
+        cond-test prog-test call-test arr-test builtin-test struct-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
@@ -368,4 +385,4 @@ clean:
 	      Test/unit/test_ir Test/unit/test_ir_abort Test/unit/test_expkind \
 	      Test/unit/test_opt Test/unit/test_translate Test/unit/test_cond \
 	      Test/unit/test_translate_prog \
-	      Test/regress/driver Test/regress/*.o
+	      Test/regress/driver Test/regress/*.o build/parser-noopt

@@ -9,6 +9,10 @@
  *   6) O2 代数化简（六条恒等式各至少一例，`#0 - y` 不动）；
  *   7) 临时变量单赋值断言“会响”：8 个 abort 子模式（重复赋值 / 赋值前使用 /
  *      条件取值例外的 6 种反例）必须诊断 + abort。
+ *   8) O4 结果直达（ASSIGN/ARITH 源、链式；使用两次 / 两次定义 / 非拷贝 / ADDR、
+ *      ASSIGN_DEREF 源均不得匹配）；
+ *   9) O3 立即数内联（ASSIGN/ARITH/RETURN/DEREF_ASSIGN.y；解引用基址、&t、PARAM、
+ *      READ 目标、条件取值模板均逐字节不变）。
  *
  * ★ 独立可执行 + 子模式，而不是把 abort 用例并进普通用例：abort() 会结束整个进程，
  *   并进主流程会让后面的用例一条都不跑（与 test_ir_abort 的理由相同）。
@@ -355,11 +359,12 @@ static void test_noop(void) {
         "RETURN v1",
         NULL
     };
-    /* 含临时变量：顺带证明合法 IR 能通过单赋值断言。 */
+    /* 含临时变量但不构成 O3/O4 形状（非常量、后面不是紧邻拷贝）：
+     * 顺带证明合法 IR 能通过单赋值断言，且 O3/O4 不会误改。 */
     static const char *const with_temp[] = {
-        "t1 := #5",
-        "v1 := t1",
-        "RETURN v1",
+        "t1 := v2 + #1",
+        "WRITE t1",
+        "RETURN #0",
         NULL
     };
     /* 普通变量允许被多次赋值：断言只射临时变量，不能误伤 vN。 */
@@ -472,6 +477,147 @@ static void test_algebra(void) {
     check_ir("O2 #0 - y 不动（取负）", sub_l0, sub_l0);
 }
 
+/* ── O4 结果直达 ─────────────────────────────────────────────────────────
+ *
+ * 匹配紧邻的 `t := <rhs>` / `x := t`；门槛是 t 只定义一次、只读一次。
+ * 源允许 ASSIGN 与 ARITH（设计文档 §7 的 `t := …; x := t`）；ADDR/ASSIGN_DEREF
+ * 不作源。负例的 rhs 一律用**非常量**，避免 O3 合法地改变输出而让“不得匹配”
+ * 的断言失去判别力。 */
+static void test_copy_prop(void) {
+    static const char *const const_src[] = {
+        "t1 := #5", "v1 := t1", "RETURN v1", NULL
+    };
+    static const char *const const_want[] = {
+        "v1 := #5", "RETURN v1", NULL
+    };
+    /* 非常量源：O3 不会碰，只有 O4 能消掉这条拷贝。 */
+    static const char *const var_src[] = {
+        "t1 := v2", "v1 := t1", "RETURN v1", NULL
+    };
+    static const char *const var_want[] = {
+        "v1 := v2", "RETURN v1", NULL
+    };
+    /* 源是一条 ARITH：结果直达。 */
+    static const char *const arith_src[] = {
+        "t1 := v2 + #1", "v1 := t1", "RETURN v1", NULL
+    };
+    static const char *const arith_want[] = {
+        "v1 := v2 + #1", "RETURN v1", NULL
+    };
+    /* 链式：重扫循环 + 固定点内两轮均应得到同一结果。 */
+    static const char *const chain_src[] = {
+        "t1 := #5", "t2 := t1", "v1 := t2", "RETURN v1", NULL
+    };
+    static const char *const chain_want[] = {
+        "v1 := #5", "RETURN v1", NULL
+    };
+
+    /* 不得匹配 1：t 被读两次（一处紧邻拷贝 + 一处后续拷贝）。
+     * 去掉 irCountOperandUses == 1 后，O4 会删掉 t 的定义并在后置断言处 abort。 */
+    static const char *const use_twice[] = {
+        "t1 := v2 + #1", "v1 := t1", "v2 := t1", "RETURN v1", NULL
+    };
+    /* 不得匹配 2（brief 指定形状）：两次使用都在算术里，第二条不是 `y := t`。 */
+    static const char *const use_twice_arith[] = {
+        "t1 := v2 + #1", "v1 := t1 + t1", "RETURN v1", NULL
+    };
+    /* 不得匹配 3：条件取值模板的 t 有两次定义。 */
+    static const char *const two_defs[] = {
+        "t1 := #0", "LABEL label1 :", "t1 := #1",
+        "v1 := t1", "RETURN v1", NULL
+    };
+    /* 不得匹配 4：第二条不是 `y := t`。 */
+    static const char *const not_copy[] = {
+        "t1 := v2 + #1", "v1 := t1 + #1", "RETURN v1", NULL
+    };
+    /* 不得匹配 5：源是 IR_ADDR / IR_ASSIGN_DEREF，不作 O4 的源。 */
+    static const char *const addr_src[] = {
+        "t1 := &v2", "v1 := t1", "RETURN v1", NULL
+    };
+    static const char *const deref_src[] = {
+        "t1 := *v2", "v1 := t1", "RETURN v1", NULL
+    };
+
+    check_ir("O4 常量 rhs", const_src, const_want);
+    check_ir("O4 变量 rhs（O3 不参与）", var_src, var_want);
+    check_ir("O4 ARITH 结果直达", arith_src, arith_want);
+    check_ir("O4 链式拷贝（固定点）", chain_src, chain_want);
+    check_ir("O4 不得匹配：t 被使用两次", use_twice, use_twice);
+    check_ir("O4 不得匹配：两次使用都在算术里", use_twice_arith, use_twice_arith);
+    check_ir("O4 不得匹配：t 有两次定义", two_defs, two_defs);
+    check_ir("O4 不得匹配：第二条不是 y := t", not_copy, not_copy);
+    check_ir("O4 不得匹配：IR_ADDR 不作源", addr_src, addr_src);
+    check_ir("O4 不得匹配：IR_ASSIGN_DEREF 不作源", deref_src, deref_src);
+}
+
+/* ── O3 立即数内联 ───────────────────────────────────────────────────────
+ *
+ * 可内联位置覆盖 ASSIGN.y / ARITH.y,z / DEREF_ASSIGN.y / RETURN.x 等；
+ * 不可内联位置（解引用基址、&t、PARAM、READ 目标）必须让整个候选跳过，
+ * 对应输入**逐字节不变**。条件取值模板（两次定义）同样跳过。 */
+static void test_inline_const(void) {
+    static const char *const fold_after[] = {
+        "t1 := #5", "v1 := t1 + #1", "WRITE v1", "RETURN #0", NULL
+    };
+    static const char *const fold_after_want[] = {
+        "v1 := #6", "WRITE v1", "RETURN #0", NULL
+    };
+    /* 多使用：两处都要替换，然后 O1 折叠。 */
+    static const char *const multi[] = {
+        "t1 := #5", "v1 := t1 + t1", "RETURN v1", NULL
+    };
+    static const char *const multi_want[] = {
+        "v1 := #10", "RETURN v1", NULL
+    };
+    /* RETURN.x 属于可内联位置。 */
+    static const char *const ret[] = {
+        "t1 := #5", "RETURN t1", NULL
+    };
+    static const char *const ret_want[] = {
+        "RETURN #5", NULL
+    };
+
+    /* 不可内联 1：`place := *t` 的基址。 */
+    static const char *const deref_base[] = {
+        "t1 := #5", "v1 := *t1", "RETURN v1", NULL
+    };
+    /* 不可内联 2：`*t := y` 的基址。 */
+    static const char *const deref_assign_base[] = {
+        "t1 := #5", "*t1 := #7", "RETURN #0", NULL
+    };
+    /* 不可内联 3：`x := &t`。 */
+    static const char *const addr[] = {
+        "t1 := #5", "v1 := &t1", "RETURN v1", NULL
+    };
+    /* 不可内联 4：`PARAM t`（装载器要求以字母开头）。 */
+    static const char *const param[] = {
+        "t1 := #5", "PARAM t1", "RETURN #0", NULL
+    };
+    /* 不可内联 5：条件取值模板（t 两次定义）。 */
+    static const char *const two_defs[] = {
+        "t1 := #0", "LABEL label1 :", "t1 := #1",
+        "IF t1 != #0 GOTO label2", "LABEL label2 :", "RETURN #0", NULL
+    };
+
+    /* 可替换 DEREF_ASSIGN 的**值**位置（y），基址不动。 */
+    static const char *const deref_value[] = {
+        "t1 := #7", "*v1 := t1", "RETURN #0", NULL
+    };
+    static const char *const deref_value_want[] = {
+        "*v1 := #7", "RETURN #0", NULL
+    };
+
+    check_ir("O3 常数内联后再折叠", fold_after, fold_after_want);
+    check_ir("O3 多使用全部替换", multi, multi_want);
+    check_ir("O3 替换 RETURN.x", ret, ret_want);
+    check_ir("O3 不得内联：ASSIGN_DEREF 基址", deref_base, deref_base);
+    check_ir("O3 不得内联：DEREF_ASSIGN 基址", deref_assign_base, deref_assign_base);
+    check_ir("O3 不得内联：IR_ADDR.y", addr, addr);
+    check_ir("O3 不得内联：PARAM.x", param, param);
+    check_ir("O3 不得内联：两次定义的条件取值模板", two_defs, two_defs);
+    check_ir("O3 替换 DEREF_ASSIGN 值位置", deref_value, deref_value_want);
+}
+
 /* irTempDefCount：按 codeDefines 口径数**全部**定义（不套用条件取值例外）；
  * 非临时变量返回 0。O3/O4 必须用它 == 1 作为值替换的门槛。 */
 static void test_temp_def_count(void) {
@@ -580,6 +726,8 @@ int main(int argc, char **argv) {
     test_noop();
     test_const_fold();
     test_algebra();
+    test_copy_prop();
+    test_inline_const();
 
     if (failures) {
         fprintf(stderr, "FAIL opt: %d 项失败\n", failures);

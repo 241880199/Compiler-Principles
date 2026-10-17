@@ -23,9 +23,12 @@ TESTS="${1:-$REPO/Test/lab3}"
 PY="$(command -v python3 || command -v python || true)"
 if [ -z "$PY" ]; then echo "找不到 python3 / python" >&2; exit 2; fi
 
-# parser 路径可被 LAB3_PARSER 覆盖 —— 仅供本运行台的判别力自证使用：
-# 用一个会写出固定 IR 的桩 parser，就能在不依赖真解析器转换结果的情况下，
-# 验证"(b) IR 结果与 .exp 不符"这条分支真的会红。
+# parser 路径可被 LAB3_PARSER 覆盖。两处用途：
+#   1) 判别力自证：用一个会写出固定 IR 的桩 parser，验证"(b) IR 结果与 .exp 不符"
+#      这条分支真的会红；
+#   2) `make opt-off-test`：LAB3_OPT 是**编译期宏**，环境变量改不了已编译的 parser，
+#      故该目标先用 -DLAB3_OPT=0 构建 build/parser-noopt，再经本变量指向它，跑同一批
+#      .cmm 并以 .exp 为裁判 —— “优化未改行为”因此由参考机独立证明。
 PARSER="${LAB3_PARSER:-$REPO/parser}"
 if [ ! -x "$PARSER" ]; then
     echo "找不到可执行的 parser：$PARSER（先在仓库根 make，或用 LAB3_PARSER 指定）" >&2
