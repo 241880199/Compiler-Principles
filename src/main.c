@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
                 fprintf(stdout, "Cannot translate: Code contains variables or parameters of structure type.\n");
             } else if (semErrs == 0 && !semanticOnly) {
                 InterCodeList *ir = translateProgram(root);
-                optimizeIR(ir);      /* Task 6 落的 no-op；Task 16 起才有真实现 */
+                optimizeIR(ir);      /* Task 16 起：迭代到不动点；各 pass 见 optimize.c */
                 printIR(out, ir);
             }
         }

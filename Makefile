@@ -150,6 +150,33 @@ ir-abort-test: Test/unit/test_ir_abort
 	    echo "FAIL ir-abort: stderr 未含预期诊断：$$err"; exit 1; fi; \
 	echo "PASS ir-abort（退出码 $$st，诊断已出）"
 
+# 优化框架单测（Task 16）：只测框架与不变量断言，不测 O1–O9 的实际优化。
+# 输入是**字符串形式的 IR**（见 test_opt.c 顶部），Task 17–19 加用例时只添字符串。
+# 链接 src/optimize.c + src/ir.c（+ util.c：ir.c 的 xmalloc/xstrdup 在 util.c）。
+Test/unit/test_opt: Test/unit/test_opt.c src/optimize.c src/optimize.h \
+                     src/ir.c src/ir.h src/util.c src/util.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_opt.c src/optimize.c src/ir.c src/util.c
+
+# 判据是退出码；成功时本程序不写 stdout/stderr，PASS 由这里打印。
+opt-test: Test/unit/test_opt
+	@bash -o pipefail -c './Test/unit/test_opt' && echo "PASS opt-test"
+
+# 「响亮失败」用例：单赋值 / 先定义后使用被违反时必须 abort。
+# abort 带 SIGABRT 结束整个进程，故与普通用例分成**独立调用**（同 ir-abort-test 的理由）。
+# 通过判据两条都要满足：退出码非 0 **且** stderr 含点名违规的诊断 ——
+# 只看退出码会让“被别的信号杀掉”蒙混过关，只看文字则可能漏掉“其实没崩”。
+# 两个子模式各自跑一次；`mktemp` 避免在仓内留临时件。
+opt-abort-test: Test/unit/test_opt
+	@bash -c 'exec 2>/dev/null; rc=0; err=$$(mktemp); \
+	  ./Test/unit/test_opt --double-assign >/dev/null 2>$$err; st1=$$?; \
+	  if [ $$st1 -eq 0 ]; then echo "FAIL opt-abort: 重复赋值没有 abort"; rc=1; fi; \
+	  if ! grep -qF "被赋值两次" $$err; then echo "FAIL opt-abort: 重复赋值诊断缺失"; cat $$err; rc=1; fi; \
+	  ./Test/unit/test_opt --use-before-def >/dev/null 2>$$err; st2=$$?; \
+	  if [ $$st2 -eq 0 ]; then echo "FAIL opt-abort: 先定义后使用没有 abort"; rc=1; fi; \
+	  if ! grep -qF "赋值之前使用" $$err; then echo "FAIL opt-abort: 先定义后使用诊断缺失"; cat $$err; rc=1; fi; \
+	  rm -f $$err; \
+	  if [ $$rc -eq 0 ]; then echo "PASS opt-abort（退出码 $$st1 / $$st2）"; fi; exit $$rc'
+
 # AST 形状判别表单测：全项目唯一一个直接构造 Node 来钉"语法树长什么样"的用例。
 # 判别表一旦判错，错的是整棵树的语义，而错误的 IR 往往"看着挺像那么回事"，
 # 端到端（parser + 真机）测不出来，故必须有单测。
@@ -334,12 +361,13 @@ struct-test: parser
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test expkind-test translate-test cond-test prog-test call-test arr-test \
-        builtin-test struct-test
+        ir-abort-test opt-test opt-abort-test expkind-test translate-test cond-test prog-test \
+        call-test arr-test builtin-test struct-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
 	      Test/unit/test_nodetype Test/unit/test_symtab Test/unit/test_report \
 	      Test/unit/test_ir Test/unit/test_ir_abort Test/unit/test_expkind \
-	      Test/unit/test_translate Test/unit/test_cond Test/unit/test_translate_prog \
+	      Test/unit/test_opt Test/unit/test_translate Test/unit/test_cond \
+	      Test/unit/test_translate_prog \
 	      Test/regress/driver Test/regress/*.o
