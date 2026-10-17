@@ -1,4 +1,5 @@
 #include "optimize.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -310,16 +311,147 @@ static void assertTempsSingleAssign(InterCodeList *h) {
 }
 
 /* ============================================================================
+ *  O1 常量折叠 / O2 代数化简（Task 17）
+ *
+ *  规则表（与 task-17-brief.md Step 1 逐条对应）：
+ *
+ *  O1（两侧都是 OP_CONST 的 ARITH ⇒ 原地改成 ASSIGN x := #结果）
+ *      #3 + #4      ⇒ #7          #2 - #5       ⇒ #-3
+ *      #6 * #7      ⇒ #42         #7 / #2       ⇒ #3
+ *      #-7 / #2     ⇒ #-4         #7 / #-2      ⇒ #-4    （向下取整，P1）
+ *      #-7 / #-2    ⇒ #3          #5 / #0       ⇒ 不折叠（除零交运行期）
+ *      任意结果超出 int 范围 ⇒ 不折叠（参考机是 Python 无界整数，折成 C int 会改语义；
+ *      INT_MIN / -1 也由此自然落空）。
+ *
+ *  O2（单侧常量恒等式；只作用 IR_ADD/SUB/MUL/DIV）
+ *      y + #0 / #0 + y  ⇒ y       y - #0        ⇒ y
+ *      y * #1 / #1 * y  ⇒ y       y / #1        ⇒ y
+ *      y * #0 / #0 * y  ⇒ #0      #0 - y        ⇒ 不动（取负，删不掉）
+ *
+ *  O1 在框架里先跑：两侧常量的输入由 O1 处理；若 O1 因除零/溢出拒绝折叠，
+ *  O2 也**不得**接手（否则会把“留待运行期”的语义悄悄改掉）。
+ *
+ *  原地改指令：先保存 x（union 里 assign.x 与 binop.x 同址），再改 kind 与字段；
+ *  不新建/删除结点。被丢弃的旧操作数交给进程退出回收（同 deleteCode 的口径）。
+ * ============================================================================ */
+
+static int isArith(InterCode *c) {
+    return c && (c->kind == IR_ADD || c->kind == IR_SUB ||
+                 c->kind == IR_MUL || c->kind == IR_DIV);
+}
+
+/* 向下取整除法（虚拟机语义 P1）。C99 的 / 向零截断，故按余数符号修正：
+ *   -7 / 2  ⇒ q=-3, r=-1 ⇒ q-- = -4
+ *    7 / -2 ⇒ q=-3, r= 1 ⇒ q-- = -4
+ *   -7 / -2 ⇒ q= 3, r=-1 ⇒ 不变 =  3
+ * b == 0 由调用方排除。 */
+static long long floorDiv(long long a, long long b) {
+    long long q = a / b;
+    long long r = a % b;
+    if (r != 0 && ((r < 0) != (b < 0))) q--;
+    return q;
+}
+
+/* 计算常量二元运算。成功返回 1 并写 *out；除零或结果溢出 int 返回 0（不折叠）。 */
+static int evalConstBinop(int kind, int a, int b, int *out) {
+    long long r;
+    switch (kind) {
+    case IR_ADD: r = (long long)a + (long long)b; break;
+    case IR_SUB: r = (long long)a - (long long)b; break;
+    case IR_MUL: r = (long long)a * (long long)b; break;
+    case IR_DIV:
+        if (b == 0) return 0;
+        r = floorDiv((long long)a, (long long)b);
+        break;
+    default:
+        return 0;
+    }
+    if (r < (long long)INT_MIN || r > (long long)INT_MAX) return 0;
+    *out = (int)r;
+    return 1;
+}
+
+/* 原地把 ARITH 改成 `x := rhs`（先取 x，避免被 union 覆盖）。 */
+static void makeAssign(InterCode *c, Operand rhs) {
+    Operand x = c->u.binop.x;
+    c->kind = IR_ASSIGN;
+    c->u.assign.x = x;
+    c->u.assign.y = rhs;
+}
+
+static int isConstVal(Operand o, int v) {
+    return o && o->kind == OP_CONST && o->value == v;
+}
+
+/* O1：两侧常量 ⇒ ASSIGN。返回本次改动条数。 */
+static int passConstFold(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (p = hh->next; p != hh; p = p->next) {
+        InterCode *c = p->code;
+        int v;
+        if (!isArith(c)) continue;
+        if (!c->u.binop.y || c->u.binop.y->kind != OP_CONST) continue;
+        if (!c->u.binop.z || c->u.binop.z->kind != OP_CONST) continue;
+        if (!evalConstBinop(c->kind, c->u.binop.y->value,
+                            c->u.binop.z->value, &v)) continue;
+        makeAssign(c, opConst(v));
+        changed++;
+    }
+    return changed;
+}
+
+/* O2：单侧常量恒等式。返回本次改动条数。 */
+static int passAlgebra(InterCodeList *h) {
+    InterCodeList *hh = irHead(h), *p;
+    int changed = 0;
+
+    if (!hh) return 0;
+    for (p = hh->next; p != hh; p = p->next) {
+        InterCode *c = p->code;
+        Operand y, z;
+        if (!isArith(c)) continue;
+        y = c->u.binop.y;
+        z = c->u.binop.z;
+        if (!y || !z) continue;
+        /* 两侧常量归 O1；这里不接手（含 O1 因除零/溢出拒绝的输入）。 */
+        if (y->kind == OP_CONST && z->kind == OP_CONST) continue;
+        switch (c->kind) {
+        case IR_ADD:
+            if (isConstVal(z, 0))            { makeAssign(c, y); changed++; }
+            else if (isConstVal(y, 0))       { makeAssign(c, z); changed++; }
+            break;
+        case IR_SUB:
+            if (isConstVal(z, 0))            { makeAssign(c, y); changed++; }
+            /* `#0 - y` 是取负，不能删。 */
+            break;
+        case IR_MUL:
+            if (isConstVal(z, 1))            { makeAssign(c, y); changed++; }
+            else if (isConstVal(y, 1))       { makeAssign(c, z); changed++; }
+            else if (isConstVal(z, 0))       { makeAssign(c, opConst(0)); changed++; }
+            else if (isConstVal(y, 0))       { makeAssign(c, opConst(0)); changed++; }
+            break;
+        case IR_DIV:
+            if (isConstVal(z, 1))            { makeAssign(c, y); changed++; }
+            break;
+        default:
+            /* isArith 已过滤，其余 kind 不可达；写出来是为了 -Wswitch 零警告。 */
+            break;
+        }
+    }
+    return changed;
+}
+
+/* ============================================================================
  *  框架：反复跑各子 pass，直到一轮下来不再有改动（不动点）
  *
  *  每个子 pass 返回**本次改动条数**；0 表示该 pass 已不动。
- *  Task 16 全部是桩；Task 17–19 分别填实现，`optimizeIR` 不需要再改。
+ *  Task 16 建框架；Task 17 填 O1/O2，Task 18–19 填其余。
  * ============================================================================ */
 
 static int passesChanged;
-
-static int passConstFold(InterCodeList *h)   { (void)h; return 0; }
-static int passAlgebra(InterCodeList *h)     { (void)h; return 0; }
 static int passCopyProp(InterCodeList *h)    { (void)h; return 0; }
 static int passInlineConst(InterCodeList *h) { (void)h; return 0; }
 static int passDeadLabel(InterCodeList *h)   { (void)h; return 0; }

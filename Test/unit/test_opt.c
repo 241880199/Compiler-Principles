@@ -1,11 +1,13 @@
-/* 优化框架单测（Task 16）。
+/* 优化框架单测（Task 16 起，Task 17 补 O1/O2）。
  *
- * 被测对象只有“框架”本身，不测任何实际优化（O1–O9 在 Task 17–19 才实现）：
+ * 被测对象：
  *   1) irIsTemp 的名字判定（t1/t12 真；t/temp/t1x/label1/v1 假）；
  *   2) irCountOperandUses 的“只数读、不数定义”口径与同行多次出现计数；
  *   3) irTempDefCount 数全部定义（条件取值模板 = 2、普通临时变量 = 1、非临时 = 0）；
- *   4) 全桩时的 no-op：optimizeIR 前后 IR 逐字节不变；
- *   5) 临时变量单赋值断言“会响”：8 个 abort 子模式（重复赋值 / 赋值前使用 /
+ *   4) 无优化可做时的 no-op：optimizeIR 前后 IR 逐字节不变；
+ *   5) O1 常量折叠（含长整数中间量、int 溢出保护、虚拟机向下取整除法 P1）；
+ *   6) O2 代数化简（六条恒等式各至少一例，`#0 - y` 不动）；
+ *   7) 临时变量单赋值断言“会响”：8 个 abort 子模式（重复赋值 / 赋值前使用 /
  *      条件取值例外的 6 种反例）必须诊断 + abort。
  *
  * ★ 独立可执行 + 子模式，而不是把 abort 用例并进普通用例：abort() 会结束整个进程，
@@ -347,7 +349,7 @@ static void test_count_uses(void) {
 }
 
 static void test_noop(void) {
-    /* brief Step 5 用例 3：所有 pass 是桩 ⇒ 逐字节不变。 */
+    /* 这些输入没有任何可折叠/可化简的形状 ⇒ 逐字节不变。 */
     static const char *const plain[] = {
         "v1 := #5",
         "RETURN v1",
@@ -382,6 +384,92 @@ static void test_noop(void) {
         };
         check_ir("no-op（READ t1 自读不误报）", read_temp, read_temp);
     }
+}
+
+/* ── O1 常量折叠 ─────────────────────────────────────────────────────────
+ *
+ * 重点在**边界**而不是四则运算本身：
+ *   · 负数的三种除法组合必须向下取整（P1：虚拟机语义），C 的 / 会向零截断；
+ *   · 除零**不折叠**（留待运行期报错，编译期替它决定是错的）；
+ *   · 结果溢出 int **不折叠**（参考机是 Python 无界整数，折成 C int 会改语义）；
+ *   · 两侧都是常量时以 O1 为准（`#0 + #0` 直接成 `#0`）。
+ *
+ * 计划里的 `t1 := #-7` / `v1 := t1 / #2` 需要 O4 把 t1 传播进除法才能折叠，
+ * 故这里用**直接常量** `v1 := #-7 / #2`；O4 的传播用例留给 Task 18。 */
+static void test_const_fold(void) {
+    static const char *const add[] = { "v1 := #3 + #4", "RETURN v1", NULL };
+    static const char *const add_want[] = { "v1 := #7", "RETURN v1", NULL };
+
+    static const char *const sub[] = { "v1 := #2 - #5", "RETURN v1", NULL };
+    static const char *const sub_want[] = { "v1 := #-3", "RETURN v1", NULL };
+
+    static const char *const mul[] = { "v1 := #6 * #7", "RETURN v1", NULL };
+    static const char *const mul_want[] = { "v1 := #42", "RETURN v1", NULL };
+
+    static const char *const div_exact[] = { "v1 := #7 / #2", "RETURN v1", NULL };
+    static const char *const div_exact_want[] = { "v1 := #3", "RETURN v1", NULL };
+
+    /* P1：三种负数组合，全部向下取整。 */
+    static const char *const div_neg_dividend[] = { "v1 := #-7 / #2", "RETURN v1", NULL };
+    static const char *const div_neg_dividend_want[] = { "v1 := #-4", "RETURN v1", NULL };
+
+    static const char *const div_neg_divisor[] = { "v1 := #7 / #-2", "RETURN v1", NULL };
+    static const char *const div_neg_divisor_want[] = { "v1 := #-4", "RETURN v1", NULL };
+
+    static const char *const div_neg_both[] = { "v1 := #-7 / #-2", "RETURN v1", NULL };
+    static const char *const div_neg_both_want[] = { "v1 := #3", "RETURN v1", NULL };
+
+    /* 除零：编译期不替运行期做决定，指令原样保留。 */
+    static const char *const div_zero[] = { "v1 := #5 / #0", "RETURN v1", NULL };
+
+    /* 溢出：2147483647 + 1 超出 int，必须原样保留（真机按无界整数算出 2147483648）。 */
+    static const char *const overflow[] = { "v1 := #2147483647 + #1", "RETURN v1", NULL };
+
+    /* 同时满足 O1/O2：以 O1 为准。 */
+    static const char *const both[] = { "v1 := #0 + #0", "RETURN v1", NULL };
+    static const char *const both_want[] = { "v1 := #0", "RETURN v1", NULL };
+
+    check_ir("O1 加法", add, add_want);
+    check_ir("O1 减法", sub, sub_want);
+    check_ir("O1 乘法", mul, mul_want);
+    check_ir("O1 整除", div_exact, div_exact_want);
+    check_ir("O1 除法向下取整（负被除数）", div_neg_dividend, div_neg_dividend_want);
+    check_ir("O1 除法向下取整（负除数）", div_neg_divisor, div_neg_divisor_want);
+    check_ir("O1 除法向下取整（负负）", div_neg_both, div_neg_both_want);
+    check_ir("O1 除零不折叠", div_zero, div_zero);
+    check_ir("O1 溢出不折叠", overflow, overflow);
+    check_ir("O1 优先于 O2（#0 + #0）", both, both_want);
+}
+
+/* ── O2 代数化简 ─────────────────────────────────────────────────────────
+ *
+ * 六条恒等式各至少一例；`#0 - y` 是取负，必须**不动**（去掉它会把 -y 变成 y，
+ * 这是本项目最容易被“化简”出来的语义错）。 */
+static void test_algebra(void) {
+    static const char *const add_r0[] = { "v1 := v2 + #0", "RETURN v1", NULL };
+    static const char *const add_l0[] = { "v1 := #0 + v2", "RETURN v1", NULL };
+    static const char *const sub_r0[] = { "v1 := v2 - #0", "RETURN v1", NULL };
+    static const char *const mul_r1[] = { "v1 := v2 * #1", "RETURN v1", NULL };
+    static const char *const mul_l1[] = { "v1 := #1 * v2", "RETURN v1", NULL };
+    static const char *const div_r1[] = { "v1 := v2 / #1", "RETURN v1", NULL };
+    static const char *const mul_r0[] = { "v1 := v2 * #0", "RETURN v1", NULL };
+    static const char *const mul_l0[] = { "v1 := #0 * v2", "RETURN v1", NULL };
+
+    static const char *const to_v2[] = { "v1 := v2", "RETURN v1", NULL };
+    static const char *const to_zero[] = { "v1 := #0", "RETURN v1", NULL };
+
+    /* `#0 - v2` 是 -v2：不得化简成 v2，也不得折叠成 #0。 */
+    static const char *const sub_l0[] = { "v1 := #0 - v2", "RETURN v1", NULL };
+
+    check_ir("O2 y + #0 → y", add_r0, to_v2);
+    check_ir("O2 #0 + y → y", add_l0, to_v2);
+    check_ir("O2 y - #0 → y", sub_r0, to_v2);
+    check_ir("O2 y * #1 → y", mul_r1, to_v2);
+    check_ir("O2 #1 * y → y", mul_l1, to_v2);
+    check_ir("O2 y / #1 → y", div_r1, to_v2);
+    check_ir("O2 y * #0 → #0", mul_r0, to_zero);
+    check_ir("O2 #0 * y → #0", mul_l0, to_zero);
+    check_ir("O2 #0 - y 不动（取负）", sub_l0, sub_l0);
 }
 
 /* irTempDefCount：按 codeDefines 口径数**全部**定义（不套用条件取值例外）；
@@ -490,6 +578,8 @@ int main(int argc, char **argv) {
     test_count_uses();
     test_temp_def_count();
     test_noop();
+    test_const_fold();
+    test_algebra();
 
     if (failures) {
         fprintf(stderr, "FAIL opt: %d 项失败\n", failures);
