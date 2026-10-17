@@ -1,0 +1,3 @@
+int g;
+int bump() { g = g + 1; return g; }
+int main() { g = 1; write(bump()); write(g); return 0; }
