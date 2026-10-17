@@ -241,9 +241,14 @@ static void check_ir(const char *name, const char *const *in, const char *const 
 
 /* ── 用例 ───────────────────────────────────────────────────────────────── */
 
-/* 指导书表 2 的“条件表达式作为值”模板：同一个 tN 先 #0 后 #1（跨 LABEL）。
- * 这是单赋值断言**唯一**允许的例外（见 optimize.c 的 isCondValuePair）；
- * 本文件里 no-op 与 irTempDefCount 两处用例共用这一份输入。 */
+/* 指导书表 2 的“条件表达式作为值”模板：同一个 tN 先 #0 后 #1。
+ * 这是单赋值断言唯一允许的例外（见 optimize.c 的 isCondValuePair），且例外判据
+ * 有**两种合法形态**：
+ *   (a) LABEL 分支：本次定义紧跟 `LABEL l_true :`，即两次定义之间跨过 LABEL
+ *       （本用例的原始形态，也是本文件里 no-op 与 irTempDefCount 两处共用的输入）；
+ *   (b) IF 分支（Task 19 的 O9 之后）：本次定义的前一条是 `IF … GOTO L`，且 L
+ *       在同一函数内、位于本次定义之后（O9 删掉 `LABEL l_true` 后的形态）。
+ * 两条都由 isCondValuePair 收得很窄；其余第二次赋值仍然 abort。 */
 static const char *const cond_value_prog[] = {
     "t1 := #0",
     "IF v1 != #0 GOTO label1",
@@ -727,6 +732,15 @@ static void test_control_flow(void) {
         "FUNCTION g :", "LABEL l1 :", "GOTO l2", "RETURN #0",
         "LABEL l2 :", "RETURN #0", NULL
     };
+    /* ★ Task 19b：O8 的 **L2** 只在另一个函数里有定义 ⇒ 不得把 `GOTO l1`（f 内）
+     * 折成 `GOTO l2`。去掉 findLabelInFunc(hh, p, l2op->name) 这道检查，本用例
+     * 就会变红。l2 在 g 里被一条 GOTO 引用，避免 O6 把对照标号删掉。 */
+    static const char *const o8_cross_l2[] = {
+        "FUNCTION f :", "GOTO l1", "RETURN #0",
+        "LABEL l1 :", "GOTO l2", "RETURN #0",
+        "FUNCTION g :", "GOTO l2", "RETURN #0",
+        "LABEL l2 :", "RETURN #0", NULL
+    };
 
     /* O9 基本：`>` 取反成 `<=`，GOTO l2 与 LABEL l1 被删。 */
     static const char *const invert_gt[] = {
@@ -749,6 +763,23 @@ static void test_control_flow(void) {
     static const char *const multi_ref[] = {
         "FUNCTION f :", "IF v1 > #0 GOTO l1", "GOTO l2", "LABEL l1 :",
         "GOTO l1", "LABEL l2 :", "RETURN #0", NULL
+    };
+    /* ★ Task 19b（审查 Critical 1 的反例）：IF 的真分支目标是 l9，不是紧跟在
+     * `GOTO l2` 后面的 l1；而 l1 恰好只被体内那条 `GOTO l1` 引用一次。
+     * 只按“GOTO 后面的 LABEL 叫 L1 + refcount==1”判定，O9 会误触发：IF 改指 l2、
+     * 删掉 GOTO l2 与 LABEL l1，留下悬空的 `GOTO l1`（真分支目标也被悄悄改掉）。
+     * 加上 `labelIsNamed(c->u.iff.z, l1op->name)` 前置校验后，本用例逐字节不变；
+     * 删掉该行，本用例立刻变红 —— 这就是该检查的判别力证明。 */
+    static const char *const o9_wrong_target[] = {
+        "FUNCTION f :", "IF v1 > #0 GOTO l9", "GOTO l2", "LABEL l1 :",
+        "GOTO l1", "LABEL l2 :", "LABEL l9 :", "RETURN #0", NULL
+    };
+    /* ★ Task 19b：O9 的 L2 只在**另一个函数**里有定义 ⇒ 模式不成立，逐字节不变。
+     * （l2 在 g 里被 GOTO 引用一次，保证 O6 不会把对照标号删掉。） */
+    static const char *const o9_cross_l2[] = {
+        "FUNCTION f :", "IF v1 > #0 GOTO l1", "GOTO l2", "LABEL l1 :",
+        "WRITE #1", "RETURN #0",
+        "FUNCTION g :", "GOTO l2", "RETURN #0", "LABEL l2 :", "RETURN #0", NULL
     };
     /* O9 空 BODY：两个 LABEL 紧邻，仍应改写。 */
     static const char *const empty_body[] = {
@@ -784,9 +815,12 @@ static void test_control_flow(void) {
     check_ir("O8 防环（brief 形状；O7 先介入）", cycle_brief, cycle_brief_want);
     check_ir("O8 防环（l1↔l2 原样保留）", cycle, cycle);
     check_ir("O8 不跨函数折叠", cross_func, cross_func);
+    check_ir("O8 不跨函数折叠（L2 只在另一函数）", o8_cross_l2, o8_cross_l2);
     check_ir("O9 条件反转（> ⇒ <=）", invert_gt, invert_gt_want);
     check_ir("O9 条件反转（== ⇒ !=）", invert_eq, invert_eq_want);
     check_ir("O9 不得匹配：L1 被多处引用", multi_ref, multi_ref);
+    check_ir("O9 不得匹配：IF 目标不是 L1", o9_wrong_target, o9_wrong_target);
+    check_ir("O9 不得匹配：L2 只在另一函数", o9_cross_l2, o9_cross_l2);
     check_ir("O9 空 BODY", empty_body, empty_body_want);
     check_ir("O9 条件取值模板（断言不误杀）", cond_value_prog, cond_value_want);
 }

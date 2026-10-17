@@ -578,6 +578,28 @@ static int canInlineConstUse(InterCode *c, Operand t, int *ok) {
 }
 
 /* ============================================================================
+ *  内层重扫的防御上限（Task 19b，审查 Minor 3）
+ *
+ *  下面几个 pass 都采用“改一次就从头重扫”的 `for (;;)`。正常路径靠各自的规则
+ *  保证每次改写都朝不动点前进，但内层循环**绕过了外层 20 轮上限**：一旦将来某条
+ *  防御（例如 O8 的 gotoChainSafe）被改坏，这里不会打印 20 轮警告，而是**挂死**
+ *  （Task 19 的变异 3 已实测）。故给每个 pass 一次调用内的改写次数加一个远高于
+ *  真实 IR 改写量的防御上限；超限即判定不收敛，必须响亮 abort。
+ *
+ *  ★ 这是防未来防御被改坏的兜底，**不是正常路径**：10000 远大于本仓库测试集里
+ *    任何程序（包括 lab3 五个用例组）的改写量。
+ * ============================================================================ */
+#define PER_PASS_REWRITE_MAX 10000
+
+static void noteRewrite(const char *pass, int changed) {
+    if (changed > PER_PASS_REWRITE_MAX) {
+        fprintf(stderr,
+                "internal error: %s 改写次数超过上限（疑似不收敛）\n", pass);
+        abort();
+    }
+}
+
+/* ============================================================================
  *  O4 结果直达（Task 18）
  *
  *  紧邻两条：
@@ -626,6 +648,7 @@ static int passCopyProp(InterCodeList *h) {
             if (d->kind == IR_ASSIGN) d->u.assign.x = x;
             else                      d->u.binop.x = x;   /* isArith 保证 */
             changed++;
+            noteRewrite("O4 结果直达", changed);
             did = 1;
             break;                 /* 链表已变，从头再扫 */
         }
@@ -680,6 +703,7 @@ static int passInlineConst(InterCodeList *h) {
             }
             deleteCode(p);
             changed++;
+            noteRewrite("O3 立即数内联", changed);
             did = 1;
             break;                 /* 链表已变，从头再扫 */
         }
@@ -704,7 +728,7 @@ static int passInlineConst(InterCodeList *h) {
  *    O8  `GOTO L1` 且 `LABEL L1 :` 的下一条是 `GOTO L2`
  *        （L2 有**同函数**定义）                              ⇒ 第一条改成 GOTO L2；
  *    O9  `IF c GOTO L1 / GOTO L2 / LABEL L1 : / BODY / LABEL L2 :`
- *        且 L1 全程序只被这一条 IF 引用                        ⇒ `IF !c GOTO L2 / BODY /
+ *        且 **IF 的目标就是 L1**、L1 全程序只被这一条 IF 引用   ⇒ `IF !c GOTO L2 / BODY /
  *        LABEL L2 :`（删 GOTO L2 与 LABEL L1）。
  *
  *  ★ 动态 vs 静态（不许夸大）：
@@ -862,6 +886,7 @@ static int passGotoSimplify(InterCodeList *h) {
                 labelIsNamed(q->code->u.one.x, tgt->name)) {
                 deleteCode(p);
                 changed++;
+                noteRewrite("O7/O8 GOTO 精简", changed);
                 did = 1;
                 break;
             }
@@ -886,6 +911,7 @@ static int passGotoSimplify(InterCodeList *h) {
                 /* 复用 GOTO L2 的 OP_LABEL 操作数（操作数共享是允许的）。 */
                 c->u.one.x = l2op;
                 changed++;
+                noteRewrite("O7/O8 GOTO 精简", changed);
                 did = 1;
                 break;
             }
@@ -940,6 +966,14 @@ static int passCondInvert(InterCodeList *h) {
             if (!l2op || l2op->kind != OP_LABEL || !l2op->name) continue;
             if (strcmp(l1op->name, l2op->name) == 0) continue;
 
+            /* ★ 前置条件：IF 自己的真分支目标必须就是紧跟在 GOTO 后面的 L1。
+             * 只看“GOTO 后面那个 LABEL 叫 L1”是不够的：合法 IR 里 IF 可以跳去
+             * 别的标号（如 l9），而恰好有一个同名 l1 的 LABEL 在这里、且只被别的
+             * GOTO 引用一次。缺了这道校验，O9 会把 IF 的目标改成 L2、删掉
+             * `GOTO L2` 与 `LABEL L1`，留下指向已删标号的悬空 GOTO（Task 19
+             * 审查 Critical 1 的反例，见 test_opt.c 的 O9 目标不匹配用例）。 */
+            if (!labelIsNamed(c->u.iff.z, l1op->name)) continue;
+
             /* L1 只能被这一条 IF 引用；否则删掉 LABEL 会改变别的跳转。 */
             if (labelRefCount(hh, l1op->name) != 1) continue;
 
@@ -953,6 +987,7 @@ static int passCondInvert(InterCodeList *h) {
             deleteCode(g);              /* 先删中间那条 GOTO L2 */
             deleteCode(l1node);         /* 再删 LABEL L1 */
             changed++;
+            noteRewrite("O9 条件反转", changed);
             did = 1;
             break;                      /* 链表已变，从头重扫 */
         }
@@ -980,6 +1015,7 @@ static int passDeadLabel(InterCodeList *h) {
             if (labelRefCount(hh, lab->name) != 0) continue;
             deleteCode(p);
             changed++;
+            noteRewrite("O6 死标号删除", changed);
             did = 1;
             break;
         }
