@@ -424,6 +424,19 @@ forward-test: parser
 duplicate-locals-test: parser
 	@bash scripts/run_lab3.sh Test/unit/duplicate_locals.cmm && echo "PASS duplicate-locals-test"
 
+# ── 嵌套块同名遮蔽（A-3 第三项）─────────────────────────────────────────────
+# 语义层按作用域允许内层块 `int x` 遮蔽外层 `int x`；翻译层的映射必须按 depth
+# 分层，查找取最内层可见条目。变异自证：去掉 ST_COMPST 的 enter/leaveScope
+# ⇒ 内层声明与外层同 depth，registerVarType 响亮 abort、无 IR ⇒ 本目标红。
+nested-shadow-test: parser
+	@bash scripts/run_lab3.sh Test/unit/nested_shadow.cmm && echo "PASS nested-shadow-test"
+
+# ── 单次调用 20 个实参（A-3 第三项）─────────────────────────────────────────
+# 要求书对实参个数没有上限；MAX_CALL_ARGS 只是防御上限（256）。
+# 变异自证：把 MAX_CALL_ARGS 改回 16 ⇒ translateArgs 响亮 abort、无 IR ⇒ 本目标红。
+manyargs-test: parser
+	@bash scripts/run_lab3.sh Test/unit/manyargs.cmm && echo "PASS manyargs-test"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -437,7 +450,8 @@ duplicate-locals-test: parser
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
         cond-test prog-test call-test arr-test builtin-test struct-test \
-        array-guard-test label-test forward-test duplicate-locals-test
+        array-guard-test label-test forward-test duplicate-locals-test \
+        nested-shadow-test manyargs-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

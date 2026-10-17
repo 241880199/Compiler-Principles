@@ -135,13 +135,33 @@ bad:
  * 顺序一一对应）——注意**不是**共用同一个计数器：生成一个临时变量不会消耗一个变量号。
  * 与 src/translate.h 中那句说明对齐。
  *
- * `varNameOf` 的表是**平的**：要求书假设 4 保证所有变量不重名（同名一律已被语义
- * 分析报错拦下），故不需要按作用域分层的映射 —— 一张源码名 -> IR 名的对照表就够。
+ * `varNameOf` 的表**按作用域深度分层**：语义层允许内层块用同名变量遮蔽外层
+ * （`{ int x; }` 套在 `int x` 里），故表项记 `depth`，查找从表尾向前取**最内层可见**
+ * 的那一条。同名只有在**同一 depth**重复登记时才是错误（语义闸漏了重复定义）；
+ * 不同 depth 的同名是合法的遮蔽。`enterScope`/`leaveScope` 负责压/弹当前深度，
+ * `leaveScope` 把该深度的条目从表尾删掉（含 xstrdup 的名字）。
+ * 要求书假设 4（无全局变量）仍成立：depth 0 只在程序级，正常输入不会登记任何名字。
  * 表项里的字符串一次 xstrdup 后就一直有效（返回给调用方长期持有，opVar 还会再
  * 复制一份），**绝不留任何指向栈缓冲区的指针**。 */
 static int tmpSeq = 0, labelSeq = 0, varSeq = 0;
-static struct { const char *src; const char *ir; } varMap[1024];
+typedef struct { const char *src; const char *ir; int depth; } VarMapEntry;
+static VarMapEntry varMap[1024];
 static int varMapN = 0;
+
+/* 当前作用域深度：0 = 程序级；每个函数体 / 嵌套块各进一层。 */
+static int curScope = 0;
+/* 嵌套深度上限。超出即响亮 abort（同 varMap 的容量纪律）。 */
+#define MAX_SCOPE_DEPTH 64
+
+/* 进入一个新作用域。 */
+static void enterScope(void) {
+    curScope++;
+    if (curScope > MAX_SCOPE_DEPTH) {
+        fprintf(stderr, "internal error: 作用域嵌套超过 %d 层（curScope 定长 Depth）\n",
+                MAX_SCOPE_DEPTH);
+        abort();
+    }
+}
 
 /* ══ 用户函数名保留表（最终整分支审查 Important 2）══════════════════════════
  *
@@ -167,8 +187,9 @@ static int isReservedFuncName(const char *name) {
  *
  * 为什么需要它：`arrayElemAddr` 要按**元素类型的字节数**求每一维的步长，而语义层
  * 在 `semanticAnalyze` 返回前已经把函数作用域**弹出**了 —— 翻译时 `symLookup` 看不到
- * 局部变量（更不消说函数形参）。要求书假设 4 保证无全局变量、所有名字全局唯一，
- * 故一张**翻译层自己的、平的名字 -> 类型表**就足够且安全。
+ * 局部变量（更不消说函数形参）。要求书假设 4 保证无全局变量，故一张**翻译层
+ * 自己的名字 -> 类型表**就足够且安全（作用域遮蔽见下）。该表与 varMap 一样按
+ * `depth` 分层：嵌套块允许同名遮蔽，查找取**最内层可见**的那一条（见 varMap 处）。
  *
  * 只在 `translateVarDec`（局部变量）与 `translateVarListAsParams`（形参）里登记；
  * `translateResetNames` 一并清空。名字用 xstrdup 复制（AST 的 lexeme 虽然活到进程结束，
@@ -182,16 +203,39 @@ static int isReservedFuncName(const char *name) {
  * **只此一处**（本标记），绝不靠调用点另猜。
  *
  * 表定长，写入前必须查容量（同 varMap 的纪律：溢出是**静默越界写**，不是响亮失败）。
- * 重复登记同样响亮 abort：假设 4 下不可能发生；真发生了说明翻译层把同一个声明翻了
- * 两遍或语义闸漏了重复定义，两种都必须当场暴露，不能被后一次静默覆盖。 */
+ * **同一作用域内**重复登记同样响亮 abort：语义闸本应拦下；真发生了说明翻译层把
+ * 同一个声明翻了两遍或语义闸漏了重复定义，两种都必须当场暴露，不能被后一次静默
+ * 覆盖。**不同 depth 的同名是合法的遮蔽**（内层块 `int x` 套外层 `int x`），不 abort。 */
 typedef struct {
     const char *name;
     Type        type;
     int         isArrayParam;
+    int         depth;          /* 登记时的作用域深度（见 varMap 处的说明） */
 } VarTypeEntry;
 
 static VarTypeEntry varTypes[1024];
 static int varTypesN = 0;
+
+/* 离开当前作用域：把该深度的条目从两张表的表尾删掉，再退回上一层。
+ *
+ * 当前深度的条目一定连续地排在表尾：更深层的条目在 leaveScope 时已被删掉，
+ * 而本层后续登记的新条目都追加在它们之后。故只需从表尾向前扫描。 */
+static void leaveScope(void) {
+    while (varMapN > 0 && varMap[varMapN - 1].depth == curScope) {
+        varMapN--;
+        free((void *)varMap[varMapN].src);
+        free((void *)varMap[varMapN].ir);
+    }
+    while (varTypesN > 0 && varTypes[varTypesN - 1].depth == curScope) {
+        varTypesN--;
+        free((void *)varTypes[varTypesN].name);   /* Type 对象不归本文件所有 */
+    }
+    if (curScope == 0) {
+        fprintf(stderr, "internal error: leaveScope 在程序级（curScope == 0）被调用\n");
+        abort();
+    }
+    curScope--;
+}
 
 char *newTempName(void) {
     char buf[32];
@@ -209,10 +253,9 @@ char *newLabelName(void) {
     return xstrdup(buf);
 }
 
-const char *varNameOf(const char *src) {
-    int i;
-    for (i = 0; i < varMapN; i++)
-        if (strcmp(varMap[i].src, src) == 0) return varMap[i].ir;
+/* 在当前作用域新增一条"源码名 -> 新 vN"登记（不查重；查重由 registerVarType 负责）。 */
+static const char *addVarName(const char *src) {
+    char buf[32];
     /* ★ 定长表，**写入前必须查容量**：溢出会**静默越界写** —— 没有诊断、没有 abort，
      * 还会踩到同 TU 里的其它静态变量（tmpSeq/varSeq 就在旁边），产出一份"看着挺像
      * 那么回事"的错 IR。这与本仓库"响亮失败"的纪律正好相反。课程用例远到不了 1024 个
@@ -221,18 +264,42 @@ const char *varNameOf(const char *src) {
         fprintf(stderr, "internal error: varMap 溢出（>1024 个变量名）\n");
         abort();
     }
-    { char buf[32]; snprintf(buf, sizeof buf, "v%d", ++varSeq);
-      varMap[varMapN].src = xstrdup(src); varMap[varMapN].ir = xstrdup(buf); varMapN++; }
+    snprintf(buf, sizeof buf, "v%d", ++varSeq);
+    varMap[varMapN].src = xstrdup(src);
+    varMap[varMapN].ir = xstrdup(buf);
+    varMap[varMapN].depth = curScope;
+    varMapN++;
     return varMap[varMapN - 1].ir;
 }
 
-/* 清空局部变量名/类型映射，但**不**重置 varSeq/tmpSeq/labelSeq。
+const char *varNameOf(const char *src) {
+    int i;
+    /* 从表尾向前找：同名的多条里，最后登记的那条就是**最内层可见**的（遮蔽）。
+     * depth <= curScope 是安全网 —— leaveScope 保证表里不会有更深的残留。
+     * 找不到才新增（正常输入里名字都已由声明登记；这条兜底只为不静默返回 NULL）。 */
+    for (i = varMapN - 1; i >= 0; i--)
+        if (varMap[i].depth <= curScope && strcmp(varMap[i].src, src) == 0)
+            return varMap[i].ir;
+    return addVarName(src);
+}
+
+/* **声明**专用的名字登记：总是为当前作用域新增一条，即使外层已有同名条目。
+ * 这正是"嵌套块同名遮蔽"与"使用外层变量"的分界点：
+ *   · 声明（`int x`）→ 内层必须拿到**新的 vN**（本函数）；
+ *   · 使用（`x = 1`）→ 由 varNameOf 取最内层可见条目。
+ * 若声明也走 varNameOf，`{ int x; }` 会命中外层条目、复用外层 vN —— 内层赋值
+ * 直接改写外层变量（nested-shadow-test 的实测失败形态：输出 2,2 而非 2,1）。 */
+static const char *declareVarName(const char *src) {
+    return addVarName(src);
+}
+
+/* 清空**所有**变量名/类型映射，但**不**重置 varSeq/tmpSeq/labelSeq。
  *
- * 每个函数翻译前调用一次：语义层按**函数作用域**判断重定义，故不同函数里出现同名
- * 局部变量是合法的；翻译层的表若一直扁平累积，第二个 `int x` 会在 registerVarType
- * 里响亮 abort（IR 全空）。清掉映射后每个函数都有自己的"源码名 -> vN/Type"，
- * 同名变量各用各的 `vN`。计数器**不**清：编号继续单调增长，唯一命名程序的
- * varNameOf 调用顺序未变，IR 逐字节不变。
+ * 函数级与块级的隔离现在由 enterScope/leaveScope 完成（每个函数体一层、每个
+ * 嵌套块再一层，不同函数/不同块的同名变量自然各用各的 `vN`）；本函数只在
+ * translateResetNames（单测复用进程）与整体重置时清空全部条目。
+ * 计数器**不**清：编号继续单调增长，唯一命名程序的 varNameOf 调用顺序未变，
+ * IR 逐字节不变。
  *
  * 表里 xstrdup 出来的字符串一并 free。释放是安全的：调用方（opVar）拿到名字时
  * 会**自己再复制一份**放进 IR，产物里的操作数不指向这里的字符串。 */
@@ -258,6 +325,7 @@ static void clearFunctionVarMaps(void) {
 void translateResetNames(void) {
     int i;
     clearFunctionVarMaps();
+    curScope = 0;
     for (i = 0; i < reservedFuncNamesN; i++) free(reservedFuncNames[i]);
     tmpSeq = labelSeq = varSeq = 0;
     reservedFuncNamesN = 0;
@@ -302,13 +370,14 @@ static void reserveFunctionNames(Node *root) {
         reserveFunctionNamesInList(root->child[0]);
 }
 
-/* 登记一个源码名及其类型。重复 / 溢出都**响亮 abort**（理由见 varTypes 的说明）。 */
+/* 登记一个源码名及其类型。**同作用域**重复 / 溢出都**响亮 abort**（理由见
+ * varTypes 的说明）；不同 depth 的同名允许（遮蔽）。 */
 static void registerVarType(const char *name, Type t, int isArrayParam) {
     int i;
     for (i = 0; i < varTypesN; i++) {
-        if (strcmp(varTypes[i].name, name) == 0) {
-            fprintf(stderr, "internal error: 变量 \"%s\" 的类型被登记了两次"
-                            "（假设 4 下不应发生；语义闸是否漏了重复定义？）\n", name);
+        if (varTypes[i].depth == curScope && strcmp(varTypes[i].name, name) == 0) {
+            fprintf(stderr, "internal error: 变量 \"%s\" 的类型在同一作用域内被登记了两次"
+                            "（语义闸是否漏了重复定义？）\n", name);
             abort();
         }
     }
@@ -319,15 +388,18 @@ static void registerVarType(const char *name, Type t, int isArrayParam) {
     varTypes[varTypesN].name = xstrdup(name);
     varTypes[varTypesN].type = t;
     varTypes[varTypesN].isArrayParam = isArrayParam;
+    varTypes[varTypesN].depth = curScope;
     varTypesN++;
 }
 
-/* 查不到返回 NULL；调用方（arrayElemAddr）必须把 NULL 当**响亮失败**处理，
+/* 从表尾向前找 = 取**最内层可见**的同名条目（遮蔽）。
+ * 查不到返回 NULL；调用方（arrayElemAddr）必须把 NULL 当**响亮失败**处理，
  * 不得退化成"按 4 字节一步"猜一种布局。 */
 static VarTypeEntry *lookupVarType(const char *name) {
     int i;
-    for (i = 0; i < varTypesN; i++)
-        if (strcmp(varTypes[i].name, name) == 0) return &varTypes[i];
+    for (i = varTypesN - 1; i >= 0; i--)
+        if (varTypes[i].depth <= curScope && strcmp(varTypes[i].name, name) == 0)
+            return &varTypes[i];
     return NULL;
 }
 
@@ -620,7 +692,9 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
  *     只有"入列顺序"相反 —— 两者别混为一谈。
  *   守护用例：Test/unit/lab3_call_in.cmm（`f(1,2,3)` ⇒ 123；顺序写反 ⇒ 321）。 */
 
-#define MAX_CALL_ARGS 16
+/* 单次调用的实参上限。256 只是**防御上限**（定长栈数组，256 个 Operand 可接受）；
+ * 要求书对本语言的实参个数**没有**限制，故不能把 Task 11 的 16 当成语言规则。 */
+#define MAX_CALL_ARGS 256
 
 /* Args : Exp | Exp COMMA Args —— 右递归（见 src/syntax.y）。
  *
@@ -1280,7 +1354,7 @@ static int registerDeclType(const char *name, Node *vd, int isArrayParam, Dims *
  *   地址的依据，漏了它则 `&a` 在真机上查不到、数组整个不可用。非数组不发 DEC。 */
 static InterCodeList *translateVarDec(InterCodeList *tail, Node *vd) {
     const char *srcName = leafIdName(vd);        /* ★ 类型表按**源码名**索引 */
-    const char *irName = varNameOf(srcName);     /* ★ 仍按声明顺序发 v 号（Task 8 约定） */
+    const char *irName = declareVarName(srcName);/* ★ 声明：当前作用域新发一个 v 号 */
     Dims d;
     if (registerDeclType(srcName, vd, 0, &d) > 0) {  /* 数组：dims 已是最内层在前 */
         int i, total = 1;
@@ -1344,7 +1418,12 @@ InterCodeList *translateStmt(InterCodeList *tail, Node *s) {
         return translateExp(tail, s->child[0], NULL);
 
     case ST_COMPST:
-        return translateCompSt(tail, s->child[0]);
+        /* 嵌套块：压一层作用域，块内的同名声明遮蔽外层；离开时把该层登记全部弹掉。
+         * 函数体自身的 CompSt 不经过这里 —— 它由 translateExtDef 压过一层。 */
+        enterScope();
+        tail = translateCompSt(tail, s->child[0]);
+        leaveScope();
+        return tail;
 
     case ST_RETURN: {
         /* 先把返回值算进一个临时变量，再 `RETURN 它`。
@@ -1426,7 +1505,7 @@ static InterCodeList *translateVarListAsParams(InterCodeList *tail, Node *vl) {
      *   translateArgs 把它再作实参传递时也直接 opVar。 */
     registerDeclType(name, vd, /*isArrayParam=*/1, NULL);
     c = newCode(IR_PARAM);
-    c->u.one.x = opVar(varNameOf(name));
+    c->u.one.x = opVar(declareVarName(name));
     tail = irAppend(tail, c);
     if (vl->nchild == 3) tail = translateVarListAsParams(tail, vl->child[2]);
     return tail;
@@ -1473,10 +1552,10 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e) {
       tail = irAppend(tail, c); }
 
     /* ★ 每个函数独立的局部变量映射：语义层按函数作用域放行不同函数中的同名
-     *   局部变量，翻译层的扁平表必须在这里清空，否则第二个同名 `int x` 会在
-     *   registerVarType 里 abort。**不清计数器**：vN 继续全局单调，唯一命名
-     *   程序的 IR 编号不受影响。 */
-    clearFunctionVarMaps();
+     *   局部变量。这里压一层作用域（形参与函数体同层，嵌套块再各自压栈），
+     *   函数结束时 leaveScope 把本函数的登记全部弹掉。**不清计数器**：vN 继续
+     *   全局单调，唯一命名程序的 IR 编号不受影响。 */
+    enterScope();
 
     /* 形参：按声明顺序发 PARAM。`FunDec : ID LP RP`（无参）时 child[2] 是 RP，
      * 故只在 nchild == 4 时走进去，且进去前确认它真是 VarList。 */
@@ -1488,6 +1567,7 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e) {
     }
 
     tail = translateCompSt(tail, e->child[2]);
+    leaveScope();
     return tail;
 }
 
