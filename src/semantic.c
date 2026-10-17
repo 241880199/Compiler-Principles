@@ -11,6 +11,10 @@
 static int errorCount = 0;
 static Type curFuncReturn = NULL;   /* 当前函数的返回类型（错误 8 用） */
 static int  anonCounter = 0;        /* 匿名结构体的隐藏名计数 */
+/* 本次分析是否登记过结构体类型的**变量/形参**（选做 3.1 的未实现提示用）。
+ * 只在 analyzeDec / analyzeGlobalDecList / collectParams 这三处登记点置位；
+ * 结构体**域**的类型不置位 —— `struct A { struct B b; };` 没有变量/形参。 */
+static int  hasStructType = 0;
 
 /* ── 报错：统一在这里累加条数 ────────────────────────────── */
 static void semErr(int code, int line, const char *fmt, ...) {
@@ -540,6 +544,15 @@ static Type analyzeVarDec(const Node *n, Type base) {
     return typeArrayFromDims(base, dims, nd);
 }
 
+/* 类型本身是结构体，或数组元素递归含结构体。只用于置 hasStructType；
+ * 不参与任何既有检查，故不影响错误输出。 */
+static int typeContainsStruct(Type t) {
+    if (!t) return 0;
+    if (t->kind == TY_STRUCTURE) return 1;
+    if (t->kind == TY_ARRAY) return typeContainsStruct(t->u.array.elem);
+    return 0;
+}
+
 /* ── Specifier / StructSpecifier ─────────────────────────── */
 
 static Type analyzeSpecifier(const Node *n) {     /* Specifier : TYPE | StructSpecifier */
@@ -672,6 +685,7 @@ static void analyzeDec(const Node *n, Type base) {   /* Dec : VarDec | VarDec AS
     const char *name = varDecName(n->child[0]);
     int code;
 
+    if (typeContainsStruct(t)) hasStructType = 1;
     symEnter(name, SYM_VAR, t, nodeLine(n->child[0]), &code);
     if (code)
         semErr(code, nodeLine(n->child[0]), "Redefined variable \"%s\"", name);
@@ -707,6 +721,7 @@ static ParamInfo *collectParams(const Node *varList, int *nOut) {
         }
         arr[n].name = varDecName(pd->child[1]);
         arr[n].type = analyzeVarDec(pd->child[1], base);
+        if (typeContainsStruct(arr[n].type)) hasStructType = 1;
         arr[n].decl = (Node *)pd->child[1];
         n++;
         if (varList->nchild == 1) break;
@@ -812,6 +827,8 @@ static void analyzeGlobalDecList(const Node *n, Type base) {   /* ExtDecList */
     Type t = analyzeVarDec(v, base);
     const char *name = varDecName(v);
     int code;
+    /* 全局变量不走 analyzeDec —— 这是全局作用域的登记点，检测必须与它同处。 */
+    if (typeContainsStruct(t)) hasStructType = 1;
     symEnter(name, SYM_VAR, t, nodeLine(v), &code);
     if (code) semErr(code, nodeLine(v), "Redefined variable \"%s\"", name);
     if (n->nchild == 3) analyzeGlobalDecList(n->child[2], base);
@@ -917,6 +934,7 @@ int semanticAnalyze(Node *root) {
     errorCount = 0;
     curFuncReturn = NULL;
     anonCounter = 0;
+    hasStructType = 0;
     symInit();
     registerBuiltins();
     if (!root) return 0;
@@ -924,4 +942,8 @@ int semanticAnalyze(Node *root) {
     /* 没有"文件末尾再扫一遍全局表"这一步 —— 那是错误 18（函数声明了但从未定义）用的，
      * 而本版本不做选做 2.1，没有声明这一形态。 */
     return errorCount;
+}
+
+int semanticHasStruct(void) {
+    return hasStructType;
 }

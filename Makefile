@@ -1,7 +1,11 @@
 CC     = gcc
 FLEX   = flex
 BISON  = bison
-CFLAGS = -std=c99 -Wall -g -Isrc
+
+# 选做 3.2（高维数组/数组形参）的编译期开关。默认 1 = 实现完整选做；
+# `make LAB3_32=0` 得到仅必做构建（相关输入只打提示、不产 IR）。
+LAB3_32 ?= 1
+CFLAGS = -std=c99 -Wall -g -Isrc -DLAB3_ENABLE_32=$(LAB3_32)
 
 SRCS   = src/main.c src/tree.c src/report.c src/util.c src/semantic.c src/type.c \
          src/symtab.c src/ir.c src/translate.c src/optimize.c
@@ -312,6 +316,13 @@ arr-test: Test/unit/test_translate_prog
 builtin-test: parser
 	@bash Test/unit/test_builtins.sh
 
+# 结构体输入的"不可翻译"提示（选做 3.1 的样例 1 / 3.2 的数组形参样例都要求：
+# 不实现时只打提示、输出文件为空）。判据是 **main.c 的端到端行为**，故跑真 parser。
+# 夹具**不放** Test/lab3/**：那个运行台会递归扫描并要求每个 .cmm 都有 .exp 且产出 IR，
+# 而结构体样例按设计不产 IR。
+struct-test: parser
+	@bash Test/unit/test_struct.sh
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -324,7 +335,7 @@ builtin-test: parser
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
         ir-abort-test expkind-test translate-test cond-test prog-test call-test arr-test \
-        builtin-test
+        builtin-test struct-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

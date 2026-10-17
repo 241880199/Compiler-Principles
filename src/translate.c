@@ -39,6 +39,16 @@
 #include "type.h"
 #include "util.h"
 
+/* 选做 3.2 的编译期开关：1 = 实现（默认），0 = 仅必做构建（遇到高维数组/数组形参
+ * 只打提示、不产 IR）。Makefile 恒定义它；这里的兜底只为独立编译时不至于静默切到
+ * "仅必做"语义。取值只允许 0/1，写错在编译期响亮失败。 */
+#ifndef LAB3_ENABLE_32
+#define LAB3_ENABLE_32 1
+#endif
+#if LAB3_ENABLE_32 != 0 && LAB3_ENABLE_32 != 1
+#error "LAB3_ENABLE_32 must be 0 or 1"
+#endif
+
 /* 该孩子是不是名字为 name 的**终结符**结点。NULL 一律算"不是"：
  * 空产生式（DefList/StmtList/OptTag/ExtDefList 的 ε）与 `error` 的语义值
  * 都可能让孩子为空指针，判别函数不该为此崩溃。 */
@@ -1367,11 +1377,55 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e) {
  * ★ **本轮仍无调用方** —— src/main.c 要到 Task 12 才调它。故本任务的判据是
  * Test/unit/test_translate_prog.c（`make prog-test`：真 lexer/parser + 逐字节比对），
  * 不是端到端（端到端此刻只会看到"parser 不产出 IR"）。 */
+#if !LAB3_ENABLE_32
+/* ── 仅必做构建（LAB3_ENABLE_32=0）的 AST 预扫 ──────────────────────────────
+ * 方括号层数：VarDec 是左递归链，沿 child[0] 每下一层对应源码里一个 `[...]`。
+ * 不递归进 child[1..] —— 那些是 `LB INT RB` 终结符，不是 VarDec。 */
+static int varDecBracketDepth(const Node *n) {
+    int d = 0;
+    while (n && n->type == NT_VARDEC && n->nchild == 4) {
+        d++;
+        n = n->child[0];
+    }
+    return d;
+}
+
+/* 通用 AST 预扫。"当前是否在形参里"由**递归参数**传递，不靠全局状态：
+ *   · 任意 VarDec 层数 ≥ 2 ⇒ 高维数组变量；
+ *   · ParamDec 下的 VarDec 层数 ≥ 1 ⇒ 数组形参。
+ * 必须在翻译**之前**判定并整体返回空 IR —— 边翻译边 abort 会在输出文件里
+ * 留下半份中间代码。 */
+static int programUsesUnsupported32(const Node *n, int inParams) {
+    int i;
+    if (!n) return 0;
+    if (n->type == NT_PARAMDEC) {                 /* ParamDec : Specifier VarDec */
+        for (i = 0; i < n->nchild; i++)
+            if (programUsesUnsupported32(n->child[i], 1)) return 1;
+        return 0;
+    }
+    if (n->type == NT_VARDEC) {
+        int d = varDecBracketDepth(n);
+        if (inParams ? (d >= 1) : (d >= 2)) return 1;
+    }
+    for (i = 0; i < n->nchild; i++)
+        if (programUsesUnsupported32(n->child[i], inParams)) return 1;
+    return 0;
+}
+#endif
+
 InterCodeList *translateProgram(Node *root) {
-    InterCodeList *t = irList();
-    translateResetNames();
+    InterCodeList *t;
     if (root == NULL || root->type != NT_PROGRAM || root->nchild != 1)
         shapeError("Program", root);
+#if !LAB3_ENABLE_32
+    if (programUsesUnsupported32(root, /*inParams=*/0)) {
+        /* 要求书 4.1.7 样例 2 的"不完成 3.2"提示。走 stdout（诊断口径）。 */
+        fprintf(stdout, "Cannot translate: Code contains variables of multi-dimensional array type or parameters of array type.\n");
+        return irList();
+    }
+#endif
+    t = irList();
+    translateResetNames();
     t = translateExtDefList(t, root->child[0]);          /* Program : ExtDefList */
     return t;
 }

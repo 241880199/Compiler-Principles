@@ -1,0 +1,7 @@
+struct P { int x; };
+
+int main()
+{
+    struct P a[2];
+    return 0;
+}

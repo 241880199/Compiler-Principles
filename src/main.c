@@ -48,7 +48,13 @@ int main(int argc, char **argv) {
              * 严格只认 "1"：置成 "0" 或空串都**不得**关闭翻译。 */
             const char *semOnly = getenv("CMM_SEMANTIC_ONLY");
             int semanticOnly = semOnly && strcmp(semOnly, "1") == 0;
-            if (semErrs == 0 && !semanticOnly) {
+            /* 选做 3.1 未实现：出现结构体类型的变量/形参就只打提示、不产出中间代码。
+             * 提示走 **stdout**（要求书 4.1.7 样例 1 的判分口径），输出文件保持为空。
+             * CMM_SEMANTIC_ONLY 下不得打印 —— lab2 语料含结构体，那是实验二口径的
+             * 回归，打印会破坏既有 70/0。 */
+            if (!semanticOnly && semanticHasStruct()) {
+                fprintf(stdout, "Cannot translate: Code contains variables or parameters of structure type.\n");
+            } else if (semErrs == 0 && !semanticOnly) {
                 InterCodeList *ir = translateProgram(root);
                 optimizeIR(ir);      /* Task 6 落的 no-op；Task 16 起才有真实现 */
                 printIR(out, ir);
