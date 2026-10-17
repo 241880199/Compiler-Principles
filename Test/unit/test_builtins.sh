@@ -5,7 +5,8 @@
 #   2. 用户重定义 read/write ⇒ 错误 4（行号取用户定义处），且**不翻译**；
 #   3. read/write 的实参个数不对 ⇒ 错误 9 且进程**不得 abort**，且不翻译；
 #   4. 既有语义错误用例 lab2_multi（**不走** CMM_SEMANTIC_ONLY）⇒ stdout 与
-#      .exp 逐字节相同、不翻译 —— 证明语义错误输入不会再进翻译层。
+#      .exp 逐字节相同、不翻译 —— 证明语义错误输入不会再进翻译层；
+#   5. CMM_SEMANTIC_ONLY 严格只认 "1"："0" 与空串都必须照常翻译（见文件末段）。
 #
 # 每个用例都**分别**捕获 stdout / stderr / 退出码，并断 IR 文件 —— 四样缺一不可。
 # 只捕获 stdout 会让"翻译层 abort 却留下正确诊断"蒙混过关（第 3 类正是如此）。
@@ -59,8 +60,8 @@ if [ -s "$tmp/ok.out" ]; then
     fail_case ok "stdout 非空（read/write 未登记为内建时会打印假的 Error type 2）"
     sed 's/^/      /' "$tmp/ok.out" | head -10
 fi
-if [ ! -s "$tmp/ok.ir" ]; then
-    fail_case ok "IR 输出为空（合法程序应当被翻译）"
+if [ ! -f "$tmp/ok.ir" ] || [ ! -s "$tmp/ok.ir" ]; then
+    fail_case ok "IR 输出文件不存在或为空（合法程序应当被翻译）"
 fi
 
 # ── 2. 用户重定义 read/write：错误 4，行号取用户定义处，且不翻译 ──────────────
@@ -72,7 +73,7 @@ printf '%s\n' \
 if ! diff -u "$tmp/redef.exp" "$tmp/redef.out"; then
     fail_case redef "stdout 与期望逐字节不符"
 fi
-if [ -s "$tmp/redef.ir" ]; then
+if [ -f "$tmp/redef.ir" ] && [ -s "$tmp/redef.ir" ]; then
     fail_case redef "语义错误时仍产出了 IR（翻译闸失效）"
 fi
 
@@ -86,7 +87,7 @@ printf '%s\n' \
 if ! diff -u "$tmp/badcall.exp" "$tmp/badcall.out"; then
     fail_case badcall "stdout 与期望逐字节不符"
 fi
-if [ -s "$tmp/badcall.ir" ]; then
+if [ -f "$tmp/badcall.ir" ] && [ -s "$tmp/badcall.ir" ]; then
     fail_case badcall "语义错误时仍产出了 IR（翻译闸失效）"
 fi
 
@@ -96,9 +97,33 @@ check_common multi
 if ! diff -u Test/lab2/lab2_multi.exp "$tmp/multi.out"; then
     fail_case multi "stdout 与 Test/lab2/lab2_multi.exp 逐字节不符"
 fi
-if [ -s "$tmp/multi.ir" ]; then
+if [ -f "$tmp/multi.ir" ] && [ -s "$tmp/multi.ir" ]; then
     fail_case multi "语义错误输入仍产出了 IR（翻译闸失效）"
 fi
+
+# ── 5. CMM_SEMANTIC_ONLY 严格只认 "1" ────────────────────────────────────────
+# main.c 的判定是 `semOnly && strcmp(semOnly, "1") == 0`。置 "0" 或空串**必须
+# 照常翻译** —— 若哪天有人放宽成"非空即真"或 atoi，这两种取值会静默关闭翻译，
+# 而既有的正常用例（变量未设）恰恰测不出来。每条都要求：rc=0、stdout/stderr 空、
+# IR 文件存在且非空。
+for val in 0 ""; do
+    tag="semonly_${val:-empty}"
+    CMM_SEMANTIC_ONLY="$val" ./parser Test/unit/builtin_ok.cmm "$tmp/$tag.ir" \
+        > "$tmp/$tag.out" 2> "$tmp/$tag.err"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        fail_case "$tag" "退出码 $rc（期望 0；CMM_SEMANTIC_ONLY=\"$val\" 仍应翻译）"
+    fi
+    if [ -s "$tmp/$tag.out" ]; then
+        fail_case "$tag" "stdout 非空（合法程序不该有语义诊断）"
+    fi
+    if [ -s "$tmp/$tag.err" ]; then
+        fail_case "$tag" "stderr 非空（正常流程不得写 stderr）"
+    fi
+    if [ ! -f "$tmp/$tag.ir" ] || [ ! -s "$tmp/$tag.ir" ]; then
+        fail_case "$tag" "IR 输出文件不存在或为空（CMM_SEMANTIC_ONLY=\"$val\" 不得关闭翻译）"
+    fi
+done
 
 if [ "$fail" -ne 0 ]; then
     exit 1

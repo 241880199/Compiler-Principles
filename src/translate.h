@@ -4,7 +4,7 @@
 #include "tree.h"
 #include "ir.h"
 
-/* AST -> IR。见 docs/plan.md Task 7。
+/* AST -> IR。见 docs/superpowers/plans/2026-10-15-cmm-lab3.md 的 Task 7。
  *
  * 本层的一条纪律：**"读懂语法树结构"这件事只在这里做一次**（设计文档 §3.4）。
  * 下面两个判别函数是整层唯一按 nchild / 孩子名字分支的地方；下游每个翻译函数

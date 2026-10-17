@@ -634,6 +634,16 @@ static void test_inline_const(void) {
         "*v1 := #7", "RETURN #0", NULL
     };
 
+    /* ★ 混合使用：t1 同时出现在**可替换**位置（ARITH.y）与**不可替换**位置
+     * （解引用基址）。O3 的候选判定必须看**全部**使用位置，任一不可替换就整候选
+     * 跳过 —— 否则 `v1 := t1 + #1` 会被改成 `v1 := #5 + #1`（再折叠成 #6），
+     * 而 `v2 := *t1` 仍引用 t1，t1 的定义一旦按“已内联”处理就可能被 O4/单赋值
+     * 前提误删，或至少产出一份**只替换了一半**的 IR。整候选跳过的判据是
+     * **逐字节不变**。 */
+    static const char *const mixed[] = {
+        "t1 := #5", "v1 := t1 + #1", "v2 := *t1", "RETURN #0", NULL
+    };
+
     check_ir("O3 常数内联后再折叠", fold_after, fold_after_want);
     check_ir("O3 多使用全部替换", multi, multi_want);
     check_ir("O3 替换 RETURN.x", ret, ret_want);
@@ -643,6 +653,8 @@ static void test_inline_const(void) {
     check_ir("O3 不得内联：PARAM.x", param, param);
     check_ir("O3 不得内联：两次定义的条件取值模板", two_defs, two_defs);
     check_ir("O3 替换 DEREF_ASSIGN 值位置", deref_value, deref_value_want);
+    /* 混合可替换/不可替换使用 ⇒ 整候选跳过，逐字节不变。 */
+    check_ir("O3 混合可替换/不可替换使用 ⇒ 整候选跳过", mixed, mixed);
 }
 
 /* irTempDefCount：按 codeDefines 口径数**全部**定义（不套用条件取值例外）；

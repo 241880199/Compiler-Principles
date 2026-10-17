@@ -5,7 +5,7 @@
 #   环境： PKG_REF_MAKEFILE=<路径>   判分机用的参考 Makefile（缺省 ../Makefile_ref）
 #
 # 为什么是"对拍"而不是"再比对一遍 .exp"：
-#   仓库自检 scripts/run_tests.sh 已经把仓库的 ./parser 钉在全部 .exp 上（75 个全过）。
+#   仓库自检 scripts/run_tests.sh 已经把仓库的 ./parser 钉在全部 .exp 上（70 个全过）。
 #   本脚本只要证明**包里的构建与仓库的构建逐字节同行为**，结论就传递过去了 ——
 #   于是这里不存在第二份期望值，也就不会出现"两份期望各自漂移"的问题。
 #

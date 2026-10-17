@@ -481,7 +481,9 @@ cc <输入文件>              # 中间代码写 stdout（兼容参考 Makefile 
 - `Code/Makefile` 产出的二进制名叫 `parser`（官方 Makefile 固定），故驱动的 `argv[0]` 与名字无关；
 - 输入含结构体（未实现 3.1）时，向 std**out** 打印一行
   `Cannot translate: Code contains variables or parameters of structure type.`，
-  **不创建/不写输出文件**，进程仍 `return 0`。
+  **输出文件为空（不写中间代码）**，进程仍 `return 0`。
+  （驱动在解析前就按第二个参数打开输出文件，故文件存在但为 0 字节；这与
+  `Test/unit/test_struct.sh` 的断言口径一致。）
 - **实验三不再向 stdout 打印语法树**（见 §11 P7）。实验一的语法树输出是为了实验一的评测；
   实验三的输出契约是"中间代码"，两者混在一起会让 `./parser in out` 的产物无法判定。
   语法树打印保留在代码里，由编译期开关 `LAB3_PRINT_TREE`（默认 `0`）控制。

@@ -4,6 +4,8 @@ BISON  = bison
 
 # 选做 3.2（高维数组/数组形参）的编译期开关。默认 1 = 实现完整选做；
 # `make LAB3_32=0` 得到仅必做构建（相关输入只打提示、不产 IR）。
+# ⚠️ 切换取值之前必须先 `make clean`：LAB3_32 只进 CFLAGS，**不进任何目标的
+#    依赖表**，否则 make 会复用按旧值编出的 .o，得到一个静默的混合配置。
 LAB3_32 ?= 1
 CFLAGS = -std=c99 -Wall -g -Isrc -DLAB3_ENABLE_32=$(LAB3_32)
 
@@ -365,6 +367,48 @@ builtin-test: parser
 struct-test: parser
 	@bash Test/unit/test_struct.sh
 
+# ── 数组整体值守卫（最终整分支审查 Important 1）──────────────────────────────
+# 语义层对数组长度不参与判等，故 `a = b;` / `int a[2] = b;` 会被放行。翻译层
+# 必须把"数组名当整体标量值"变为**响亮失败**：否则产出 `v1 := v2`，参考机只改
+# `a[0]` —— 静默算错。判据 = 两个夹具分别 rc=134、stderr 含 `数组`、stdout 为空、
+# 输出 IR 为空（或未创建）；任一不满足即红。
+# 变异自证：去掉 translate.c 的 TY_ARRAY 守卫后两个用例都会变成 rc=0/有 IR ⇒ 本目标红。
+array-guard-test: parser
+	@bash -c 'rc=0; for c in array_value array_init_value; do \
+	    ir=$$(mktemp); out=$$(mktemp); err=$$(mktemp); \
+	    ./parser Test/unit/$$c.cmm $$ir >$$out 2>$$err; st=$$?; \
+	    if [ $$st -ne 134 ]; then echo "FAIL array-guard $$c: 退出码 $$st（期望 134）"; rc=1; fi; \
+	    if ! grep -qF "数组" $$err; then echo "FAIL array-guard $$c: stderr 未含「数组」诊断"; rc=1; fi; \
+	    if [ -s $$out ]; then echo "FAIL array-guard $$c: stdout 非空"; sed "s/^/      /" $$out | head -5; rc=1; fi; \
+	    if [ -s $$ir ]; then echo "FAIL array-guard $$c: 输出 IR 非空"; sed "s/^/      /" $$ir | head -5; rc=1; fi; \
+	    rm -f $$ir $$out $$err; done; \
+	    if [ $$rc -eq 0 ]; then echo "PASS array-guard（2 个用例均 134，stderr 含「数组」，stdout/IR 为空）"; fi; exit $$rc'
+
+# ── 生成标号 vs 用户函数名冲突（最终整分支审查 Important 2）──────────────────
+# 参考机 labelTable 同时登记 LABEL 与 FUNCTION：用户函数 `label1` + 一个 `if`
+# 会同时得到 `FUNCTION label1` 与 `LABEL label1`，装载期 DuplicatedLabelError。
+# 判据：rc=0、stdout/stderr 空、IR 含 `FUNCTION label1 :` 但**不含**
+# `LABEL label1 :`，且参考机执行输出与 .exp 一致。
+# 变异自证：删掉 newLabelName 的跳过循环 ⇒ 参考机 DuplicatedLabelError，本目标红。
+label-test: parser
+	@bash -c 'set -u; rc=0; \
+	    PY="$$(command -v python3 || command -v python)"; \
+	    out=$$(mktemp); err=$$(mktemp); got=$$(mktemp); ir=$$(mktemp); \
+	    ./parser Test/unit/label_collision.cmm $$ir >$$out 2>$$err; prc=$$?; \
+	    if [ $$prc -ne 0 ]; then echo "FAIL label-test: 退出码 $$prc（期望 0）"; rc=1; fi; \
+	    if [ -s $$err ]; then echo "FAIL label-test: stderr 非空"; sed "s/^/      /" $$err | head -10; rc=1; fi; \
+	    if [ -s $$out ]; then echo "FAIL label-test: stdout 非空"; sed "s/^/      /" $$out | head -10; rc=1; fi; \
+	    if ! grep -q "^FUNCTION label1 :$$" $$ir; then echo "FAIL label-test: IR 缺 FUNCTION label1"; rc=1; fi; \
+	    if grep -q "^LABEL label1 :$$" $$ir; then echo "FAIL label-test: IR 含 LABEL label1（与函数名冲突）"; rc=1; fi; \
+	    if ! "$$PY" -I scripts/irsim_ref.py --run $$ir --in Test/unit/label_collision.in >$$got 2>$$err; then \
+	        echo "FAIL label-test: 参考机执行失败"; sed "s/^/      /" $$err | head -5; rc=1; \
+	    else \
+	        tail -n +2 $$got > $$got.v; mv $$got.v $$got; \
+	        if ! diff -u Test/unit/label_collision.exp $$got; then echo "FAIL label-test: 参考机 WRITE 输出与期望不符"; rc=1; fi; \
+	    fi; \
+	    rm -f $$out $$err $$got $$ir; \
+	    if [ $$rc -eq 0 ]; then echo "PASS label-test"; fi; exit $$rc'
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -377,7 +421,8 @@ struct-test: parser
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
-        cond-test prog-test call-test arr-test builtin-test struct-test
+        cond-test prog-test call-test arr-test builtin-test struct-test \
+        array-guard-test label-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

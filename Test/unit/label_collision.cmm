@@ -1,0 +1,2 @@
+int label1() { return 7; }
+int main() { int x; x = 1; if (x) x = label1(); write(x); return 0; }

@@ -87,7 +87,8 @@ IF v1 > t2 GOTO label1
 本实现把“结果算到哪”作为参数一路传下去：\code{translateExp(tail, e, place)}。
 赋值语句把左值 \code{v1} 本身作为 \code{place} 传给右子表达式，于是 \code{read()} 直接
 写进 \code{v1}；条件翻译遇到简单操作数（\code{EX\_ID} 取变量、\code{EX\_INT} 取立即数）
-时直接把它放进 \code{IF}，不再物化常量。同一段源码只需两条指令：
+时直接把它放进 \code{IF}，不再物化常量。同一段源码只需两条指令（下列为示意形态；
+经 O9 条件反转后，实际首条条件跳转形如 \code{IF v1 <= \#0 GOTO label2}）：
 
 \begin{lstlisting}
 READ v1
@@ -124,7 +125,8 @@ a[i+1][j*2] = 0;
 \end{lstlisting}
 
 \code{a} 的类型是 \code{int[4][6]}，取第一个下标后元素类型为 \code{int[6]}，步长
-$6\times4=24$；取第二个下标后为 \code{int}，步长 4。生成：
+$6\times4=24$；取第二个下标后为 \code{int}，步长 4。生成（示意形态，省略了
+index 的搬运）：
 
 \begin{lstlisting}
 t1 := i + #1

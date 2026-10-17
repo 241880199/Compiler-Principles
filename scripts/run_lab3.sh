@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 实验三自检运行台：对每个用例跑 parser -> 用无头参考机执行 -> 与 .exp 比对。
 #
-#   bash scripts/run_lab3.sh [<用例目录或单个 .cmm>]     # 默认 Test/lab3
+#   bash scripts/run_lab3.sh [<用例目录或单个 .cmm>]
+#       无参数 = 五个**真实用例组**（basic/arr1d/arrnd/func/req）；
+#       显式目录或单个 .cmm 的行为不变。
 #
 # parser 必须把中间代码写到第二个参数指定的文件；本运行台**把两类失败分开报**，
 # 否则满屏同一种 mismatch，分不清是环境没齐还是判据本身不对：
@@ -18,7 +20,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-TESTS="${1:-$REPO/Test/lab3}"
+TESTS="${1:-}"
 
 PY="$(command -v python3 || command -v python || true)"
 if [ -z "$PY" ]; then echo "找不到 python3 / python" >&2; exit 2; fi
@@ -284,8 +286,23 @@ fi
 TMP="$REPO/build/lab3-run"
 mkdir -p "$TMP"
 
-# 收集用例（支持传目录或单个文件；用 mapfile 以免文件名含空格被 word-split）
-if [ -d "$TESTS" ]; then
+# 收集用例（支持传目录或单个文件；用 mapfile 以免文件名含空格被 word-split）。
+# ★ 无参数 = 五个**真实用例组**，**不扫** Test/lab3 整棵 —— 那会把
+#   Test/lab3/selftest/ 的负例夹具（缺 .in / 缺 .exp / 故意 mismatch）也扫进来，
+#   必然红。显式传目录/文件时行为不变（可以传 selftest 做判别力实验）。
+if [ -z "$TESTS" ]; then
+    cmms=()
+    for g in basic arr1d arrnd func req; do
+        d="$REPO/Test/lab3/$g"
+        if [ ! -d "$d" ]; then
+            echo "找不到真实用例组目录：$d（无参数模式只跑五组）" >&2
+            exit 2
+        fi
+        while IFS= read -r f; do
+            cmms+=("$f")
+        done < <(find "$d" -name '*.cmm' | sort)
+    done
+elif [ -d "$TESTS" ]; then
     mapfile -t cmms < <(find "$TESTS" -name '*.cmm' | sort)
 elif [ -f "$TESTS" ]; then
     cmms=("$TESTS")
@@ -295,7 +312,7 @@ else
 fi
 
 if [ "${#cmms[@]}" -eq 0 ]; then
-    echo "在 $TESTS 下没找到任何 .cmm 用例"
+    echo "在 ${TESTS:-五个真实用例组} 下没找到任何 .cmm 用例"
     echo "----"
     echo "pass=0 fail=0"
     echo "无任何用例通过，判为红"

@@ -143,6 +143,26 @@ static int tmpSeq = 0, labelSeq = 0, varSeq = 0;
 static struct { const char *src; const char *ir; } varMap[1024];
 static int varMapN = 0;
 
+/* ══ 用户函数名保留表（最终整分支审查 Important 2）══════════════════════════
+ *
+ * 参考机的 labelTable **同时**登记 `LABEL` 与 `FUNCTION`（变量在另一张表），
+ * 故用户函数 `label1` 与生成标号 `label1` 会在装载期撞成 DuplicatedLabelError。
+ * 我们自己的编译器此前照常退出 0 —— 判分机的参考机却拒绝执行，属**静默产出
+ * 不可执行 IR**。修法：翻译前把全部用户函数名登记为保留名，`newLabelName`
+ * 生成候选后跳过它们（见下方）。
+ *
+ * 只保留**函数名**；变量名与标号不同表，不需要保留。表定长，溢出必须响亮
+ * abort（同 varMap/varTypes 的纪律：静默越界写是本仓库最怕的失效）。 */
+static char *reservedFuncNames[1024];
+static int reservedFuncNamesN = 0;
+
+static int isReservedFuncName(const char *name) {
+    int i;
+    for (i = 0; i < reservedFuncNamesN; i++)
+        if (strcmp(reservedFuncNames[i], name) == 0) return 1;
+    return 0;
+}
+
 /* ══ 源码名 -> 类型登记表（Task 13）══════════════════════════════════════════
  *
  * 为什么需要它：`arrayElemAddr` 要按**元素类型的字节数**求每一维的步长，而语义层
@@ -181,7 +201,11 @@ char *newTempName(void) {
 
 char *newLabelName(void) {
     char buf[32];
-    snprintf(buf, sizeof buf, "label%d", ++labelSeq);
+    /* 跳过用户函数名：参考机的 LABEL/FUNCTION 共用一张 labelTable，同名即
+     * DuplicatedLabelError。循环只会因保留名连续命中而多转几圈，编号仍单调。 */
+    do {
+        snprintf(buf, sizeof buf, "label%d", ++labelSeq);
+    } while (isReservedFuncName(buf));
     return xstrdup(buf);
 }
 
@@ -219,8 +243,52 @@ void translateResetNames(void) {
      * xmalloc 建的一次性结构，本文件不拥有、也不在别处释放 —— 与整个编译器
      * "一次进程、退出即回收"的既有口径一致，别在这里顺手加一套递归 free。 */
     for (i = 0; i < varTypesN; i++) free((void *)varTypes[i].name);
+    /* 函数名保留表一并清空。名字是 xstrdup 的，故也要 free —— 避免同一进程里
+     * 连续跑多个用例时泄漏并把上个用例的函数名留在表里（会让新用例的标号
+     * 无谓地跳过那些名字）。 */
+    for (i = 0; i < reservedFuncNamesN; i++) free(reservedFuncNames[i]);
     tmpSeq = labelSeq = varSeq = varMapN = 0;
     varTypesN = 0;
+    reservedFuncNamesN = 0;
+}
+
+/* 登记一个保留的用户函数名（溢出响亮 abort）。 */
+static void reserveFuncName(const char *name) {
+    if (reservedFuncNamesN >= (int)(sizeof reservedFuncNames / sizeof reservedFuncNames[0])) {
+        fprintf(stderr, "internal error: 函数名保留表溢出（>1024 个函数）\n");
+        abort();
+    }
+    reservedFuncNames[reservedFuncNamesN++] = xstrdup(name);
+}
+
+/* 遍历 ExtDefList（右递归：ExtDef ExtDefList | ε），登记每个函数定义的
+ * `FunDec.child[0]->lexeme`。只认 `Specifier FunDec CompSt` 这一种 ExtDef 形态，
+ * 与 translateExtDef 的判别式一致 —— 全局变量/函数声明/结构体定义的名字不是
+ * FUNCTION 行，不应占用标号命名空间。
+ *
+ * 这里对畸形形状**不** abort：translateExtDefList 随后会以 shapeError 响亮失败。
+ * 预扫只负责收集，不抢它的判据。 */
+static void reserveFunctionNamesInList(Node *l) {
+    Node *e, *fd;
+    if (l == NULL || l->nchild == 0) return;          /* ε */
+    if (l->nchild != 2) return;
+    e = l->child[0];
+    if (e != NULL && e->nchild == 3 &&
+        e->child[1] != NULL && e->child[1]->type == NT_FUNDEC &&
+        e->child[2] != NULL && e->child[2]->type == NT_COMPST) {
+        fd = e->child[1];
+        if (fd->child[0] != NULL && fd->child[0]->kind == NODE_TOKEN &&
+            fd->child[0]->lexeme != NULL)
+            reserveFuncName(fd->child[0]->lexeme);
+    }
+    reserveFunctionNamesInList(l->child[1]);
+}
+
+/* 从 Program 根开始预扫函数名。translateProgram 在 translateResetNames 之后、
+ * 真正翻译之前调用它。 */
+static void reserveFunctionNames(Node *root) {
+    if (root != NULL && root->type == NT_PROGRAM && root->nchild == 1)
+        reserveFunctionNamesInList(root->child[0]);
 }
 
 /* 登记一个源码名及其类型。重复 / 溢出都**响亮 abort**（理由见 varTypes 的说明）。 */
@@ -250,6 +318,31 @@ static VarTypeEntry *lookupVarType(const char *name) {
     for (i = 0; i < varTypesN; i++)
         if (strcmp(varTypes[i].name, name) == 0) return &varTypes[i];
     return NULL;
+}
+
+/* ══ 数组整体值守卫（最终整分支审查 Important 1）══════════════════════════
+ *
+ * 语义层对数组**长度不参与判等**，故 `a = b;` / `int a[2] = b;` 会被放行；
+ * 翻译层若照常按 `EX_ID` 发 `v1 := v2`，参考机只改 `a[0]` —— 一份**静默算错**
+ * 的 IR，端到端看起来"跑完了、有输出"，只是结果不对。数组只能通过下标访问
+ * （`a[i]`）或作为实参传递（`f(a)`，由 translateArgs 单独处理），**绝不能**
+ * 作为整体标量值使用。
+ *
+ * 这是翻译层的最后防线，不改语义层。`asLvalue` 只用于把诊断措辞分成
+ * "整体值使用"与"整体赋值目标"两种；判据与处理完全相同（诊断 + abort）。
+ * 查不到类型的名字不拦 —— 只有登记为 TY_ARRAY 的名字才确定是数组。 */
+static void rejectArrayWholeValue(Node *e, int asLvalue) {
+    VarTypeEntry *ent;
+    const char *name;
+    if (e == NULL || classifyExp(e) != EX_ID) return;
+    name = e->child[0]->lexeme;
+    ent = lookupVarType(name);
+    if (ent == NULL || ent->type == NULL || ent->type->kind != TY_ARRAY) return;
+    fprintf(stderr,
+            "internal error: 数组 \"%s\" 不能作为整体%s"
+            "（数组只能通过下标访问或作为实参传递）at line %d\n",
+            name, asLvalue ? "赋值目标" : "值使用", nodeLine(e));
+    abort();
 }
 
 /* ══ 条件翻译（Task 9）══════════════════════════════════════════════════════
@@ -317,7 +410,12 @@ static InterCodeList *appendLabel(InterCodeList *tail, const char *label) {
  * ★ 这里就是"`if (n > 0)` 只用一条 IF 指令"的**唯一**来处（设计文档 §6.1）。 */
 static Operand operandForCond(Node *e) {
     if (classifyExp(e) == EX_INT) return opConst(atoi(e->child[0]->lexeme));
-    if (classifyExp(e) == EX_ID)  return opVar(varNameOf(e->child[0]->lexeme));
+    if (classifyExp(e) == EX_ID)  {
+        /* `a > b` 里的数组同样不能当标量：这条路径不经过 translateExp，
+         * 故守卫必须在这里单独落一次（Brief Important 1 的"任何整体值使用"）。 */
+        rejectArrayWholeValue(e, 0);
+        return opVar(varNameOf(e->child[0]->lexeme));
+    }
     return NULL;
 }
 
@@ -976,6 +1074,10 @@ static InterCodeList *translateAssign(InterCodeList *tail, Node *e, Operand plac
         /* 数组元素左值由 Task 11 处理；结构体域不实现 */
         return translateAssignToLValue(tail, e, place);
     }
+    /* ★ 数组名作赋值目标同样必须拒绝：`a = b;` 语义层可能放行，而按 `v1 := v2`
+     *   翻译只改 `a[0]`（参考机语义），是一份静默算错的 IR。守卫放在把 dst
+     *   传给右子表达式**之前** —— 先翻译右侧再 abort 会白白产生一批 IR。 */
+    rejectArrayWholeValue(lhs, 1);
     dst = opVar(varNameOf(lhs->child[0]->lexeme));
     tail = translateExp(tail, e->child[2], dst);         /* ★ 直接算进目标变量 */
     if (place) {                                         /* 赋值表达式的值还要用 */
@@ -996,6 +1098,8 @@ InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place) {
         return tail;
 
     case EX_ID:
+        /* 数组整体值不能当标量：见 rejectArrayWholeValue 的说明。 */
+        rejectArrayWholeValue(e, 0);
         if (place) { InterCode *c = newCode(IR_ASSIGN);
                      c->u.assign.x = place;
                      c->u.assign.y = opVar(varNameOf(e->child[0]->lexeme));
@@ -1333,9 +1437,10 @@ static InterCodeList *translateExtDefList(InterCodeList *tail, Node *l) {
  *   [Specifier, FunDec, SEMI]      函数声明 —— 假设 6（无函数声明）保证不出现 ⇒ 跳过
  *   [Specifier, SEMI]              结构体定义 —— 本实验不涉及 ⇒ 跳过
  *   [error, SEMI]                  错误恢复 —— 假设 7（无语法错误）保证不出现 ⇒ 跳过
- * ★ 这四种"跳过"的形态都是**认得出来的**（不是"未知形状"），故不响亮失败：它们在
- * 本实验的输入里按假设不可能出现，且跳过**是安全的** —— 全局变量/声明若真出现，
- * 它在 IR 里就没有定义处，虚拟机会当场报错，而不是静默算出一个错结果。
+ * ★ 这四种"跳过"的形态都是**认得出来的**（不是"未知形状"），故不响亮失败：要求书
+ * 假设 4（无全局变量）与假设 6（无函数声明）已把它们排除在本实验的输入之外。
+ * **真出现时翻译层不保证语义**（例如全局变量不会被登记、也不会分配存储），属超范围；
+ * 这里只保证不把它们误当函数定义翻下去，不声称参考机一定会响亮报错。
  * ★ 但**绝不能**"兜底当函数定义"：那会把 `e->child[2]`（SEMI 终结符或别的结点）当
  * CompSt 翻下去，产出一份看着挺像那么回事的错 IR。故三条判别式一个都不省。
  * 形状上要留神：`Specifier FunDec SEMI` 与 `Specifier FunDec CompSt` **孩子数相同**，
@@ -1426,6 +1531,9 @@ InterCodeList *translateProgram(Node *root) {
 #endif
     t = irList();
     translateResetNames();
+    /* ★ 先预扫用户函数名再翻译：参考机的 LABEL/FUNCTION 共用 labelTable，
+     *   用户函数 `label1` 与生成标号 `label1` 同名会在装载期被拒。 */
+    reserveFunctionNames(root);
     t = translateExtDefList(t, root->child[0]);          /* Program : ExtDefList */
     return t;
 }

@@ -3,7 +3,8 @@
 
 #include <stdio.h>
 
-/* 中间代码的数据结构、构造函数族与**唯一的打印点**。见 docs/plan.md Task 6。
+/* 中间代码的数据结构、构造函数族与**唯一的打印点**。
+ * 见 docs/superpowers/plans/2026-10-15-cmm-lab3.md 的 Task 6。
  *
  * 两条模块纪律：
  *  1) 其它模块（translate.c）**不直接 printf**，一律经 printIR 出文本 —— "换输出格式"
