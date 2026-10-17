@@ -696,6 +696,37 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
  * 要求书对本语言的实参个数**没有**限制，故不能把 Task 11 的 16 当成语言规则。 */
 #define MAX_CALL_ARGS 256
 
+/* 实参的**类型**（Task A-3d）。只认三种形状，其余返回 NULL：
+ *   · `EX_PAREN` → 递归括号里的表达式（括号不改变类型）；
+ *   · `EX_ID`    → varTypes 里登记的类型（翻译层自己的表，见该表处说明）；
+ *   · `EX_INDEX` → 从 child[0] 的类型逐层 `u.array.elem`；下标层数超过维数返回 NULL。
+ * 返回 NULL 的含义是"不是（能识别的）数组实参"，调用方据此走原有的标量路径。
+ *
+ * 为什么不直接用语义层的类型：`semanticAnalyze` 返回前已把函数作用域弹出，
+ * 翻译时 `symLookup` 看不到局部变量/形参 —— 与 `arrayElemAddr` 必须自带
+ * varTypes 是同一个原因。 */
+static Type typeOfArgument(Node *e) {
+    Type t;
+    if (e == NULL) return NULL;
+    switch (classifyExp(e)) {
+    case EX_PAREN:
+        return typeOfArgument(e->child[1]);
+    case EX_ID: {
+        VarTypeEntry *ent = lookupVarType(e->child[0]->lexeme);
+        return ent ? ent->type : NULL;
+    }
+    case EX_INDEX:
+        t = typeOfArgument(e->child[0]);
+        if (t == NULL || t->kind != TY_ARRAY) return NULL;  /* 层数超过维数 / 基础非数组 */
+        return t->u.array.elem;
+    default:
+        return NULL;
+    }
+}
+
+/* 定义在下标翻译一节；translateArgs 的部分下标实参路径要提前调用。 */
+static Operand arrayElemAddr(InterCodeList **p, Node *e, int allowPartial);
+
 /* Args : Exp | Exp COMMA Args —— 右递归（见 src/syntax.y）。
  *
  * 入列顺序 = **源码顺序的逆序**：先递归右侧（更靠后的实参先入列），本项追加到末尾。
@@ -715,14 +746,21 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
  *     本身），故没有任何实参表达式能改到调用方看得见的标量变量；C 对 `f(x, g())`
  *     的求值次序本身也是未指定的。故按要求书的形态直接入列。
  *
- * ★ **数组实参（Task 14，选做 3.2c）**：剥掉括号后是 `EX_ID`、且在 varTypes 里登记为
- *   `TY_ARRAY` 时，入列的操作数是**地址**而不是值：
+ * ★ **数组实参（Task 14，选做 3.2c）**：`typeOfArgument` 判为 `TY_ARRAY` 时，
+ *   入列的操作数是**地址**而不是值：
  *     · 局部数组   → `opAddr(名字)`，渲染 `ARG &vN`；
  *     · 数组形参   → `opVar(名字)`，形参的运行时值**已经就是基地址**，**绝不再加 `&`**
  *                    （否则会传出"地址的地址"，体内按 `v + i*4` 取到的是垃圾）。
- *   括号不改变数组身份，故 `f((op))` 与 `f(op)` 同形。`argList` 是 `Operand[]`，
- *   `opAddr` 直接放得下 —— 这就是 Task 11 把它从名字数组改成操作数数组的用处。
- *   非数组实参照旧走下面的标量路径（ID → `opVar`，其余形状 → 物化）。
+ *     · **部分下标**（A-3d）→ `arrayElemAddr(..., allowPartial=1)` 算出行/子数组的
+ *                    基地址临时量，直接入列（`ARG t`；t 的值就是基地址）。`r[0]`
+ *                    仍是数组，语义层对数组只比维数/基类型、不比长度，故
+ *                    `sum(r[0])` 合法；地址路径只在**实参**这一处放宽。
+ *   括号不改变数组身份，故 `f((op))`、`f((r[0]))` 与不套括号同形。`argList` 是
+ *   `Operand[]`，`opAddr`/地址临时量都直接放得下 —— 这就是 Task 11 把它从名字数组
+ *   改成操作数数组的用处。非数组实参照旧走下面的标量路径（ID → `opVar`，其余形状
+ *   → 物化）。**数组值整体**（例如把整个 `r` 赋给某处）仍不支持：形状不是
+ *   ID/部分下标时响亮 abort；并且 `translateExp` 对部分下标作**标量值**的失败路径
+ *   未被放宽（`x = r[0]`、`write(r[0])` 仍由语义层按类型不匹配拦下）。
  *   结构体实参属选做 3.1，由语义闸（Task 15）在翻译前拦下；且 `registerDeclType`
  *   只登记 int 标量/数组，故这里没有（也不需要）结构体分支。
  *
@@ -733,20 +771,41 @@ static InterCodeList *translateArgs(InterCodeList *tail, Node *a,
                                     Operand *argList, int *n) {
     Operand t;
     Node *arg, *id;
-    VarTypeEntry *ent;
+    Type argType;
     if (a == NULL || (a->nchild != 1 && a->nchild != 3)) shapeError("Args", a);
     /* 本项（源码里靠左）：认得的形状直接入列，不认得才物化到临时变量。 */
     arg = a->child[0];
 
-    /* ★ 数组实参（Task 14）：括号不改变数组身份，先剥到 ID 再查类型表。 */
+    /* ★ 数组实参（Task 14 / A-3d）：括号不改变数组身份，先剥到最内层。 */
     id = arg;
     while (id != NULL && classifyExp(id) == EX_PAREN) id = id->child[1];
-    ent = (id != NULL && classifyExp(id) == EX_ID)
-              ? lookupVarType(id->child[0]->lexeme) : NULL;
-    if (ent != NULL && ent->type != NULL && ent->type->kind == TY_ARRAY) {
-        /* 局部数组传地址（&arr）；数组形参的运行时值已是基地址（不再加 &）。 */
-        const char *vn = varNameOf(id->child[0]->lexeme);
-        t = ent->isArrayParam ? opVar(vn) : opAddr(vn);
+    argType = typeOfArgument(arg);
+    if (argType != NULL && argType->kind == TY_ARRAY) {
+        if (id != NULL && classifyExp(id) == EX_ID) {
+            /* 局部数组传地址（&arr）；数组形参的运行时值已是基地址（不再加 &）。 */
+            VarTypeEntry *ent = lookupVarType(id->child[0]->lexeme);
+            const char *vn;
+            if (ent == NULL || ent->type == NULL || ent->type->kind != TY_ARRAY) {
+                fprintf(stderr, "internal error: 数组实参 \"%s\" 的类型登记缺失"
+                                "（语义闸应已拦下）at line %d\n",
+                        id->child[0]->lexeme, nodeLine(id));
+                abort();
+            }
+            vn = varNameOf(id->child[0]->lexeme);
+            t = ent->isArrayParam ? opVar(vn) : opAddr(vn);
+        }
+        else if (id != NULL && classifyExp(id) == EX_INDEX) {
+            /* 部分下标（`r[0]`）作为数组实参：算出行/子数组的基地址。
+             * ★ 只有这里允许 partial —— 右值/左值路径仍然要求取到标量
+             *   （见 arrayElemAddr 的 allowPartial 参数）。 */
+            t = arrayElemAddr(&tail, id, 1);
+        }
+        else {
+            /* 本实验不支持"数组值"实参（形状既不是数组名也不是部分下标）。 */
+            fprintf(stderr, "internal error: 不支持的数组实参形状（只支持数组名或"
+                            "部分下标）at line %d\n", nodeLine(arg));
+            abort();
+        }
     }
     else if (classifyExp(arg) == EX_INT) t = opConst(atoi(arg->child[0]->lexeme));
     else if (classifyExp(arg) == EX_ID)  t = opVar(varNameOf(arg->child[0]->lexeme));
@@ -880,8 +939,9 @@ static InterCodeList *translateCallN(InterCodeList *tail, Node *e, Operand place
  *   · 基础表达式不是 ID（`f()[i]` 等）—— 不在本任务范围；
  *   · 基础名没有类型登记 / 登记的不是数组 —— 语义闸（错误 10）应已拦下；
  *   · 下标层数超过数组维数 / 走完下标仍不是标量（**部分下标得到数组**）——
- *     后者语义上合法（`r[0]` 是行），但本实验不支持把数组值 / 部分下标当标量用，
- *     语义闸也不拦它（它只在"当值/当实参"的上下文里非法），故这里响亮失败。
+ *     后者语义上合法（`r[0]` 是行）。**只有实参路径**（`allowPartial=1`，A-3d）
+ *     允许结果仍是数组并返回该部分下标的地址；右值/左值路径（`allowPartial=0`）
+ *     仍要求取到标量，部分下标当值用照旧响亮失败（`x = r[0]` 等由语义闸先拦）。
  *
  * ★ **数组形参的基地址（Task 14）**：形参在运行时的值**就是**基地址，故
  *   `base = opVar(名字)`；局部数组才 `base = opAddr(名字)`（渲染 `&a`）。
@@ -938,8 +998,12 @@ static Node *collectIndexChain(Node *e, Node **indices, int *n) {
 }
 
 /* 计算 `Exp1[Exp2]…` 的元素地址到一个**新临时变量**并返回该操作数；新增 IR 挂在
- * `*p` 后（`*p` 就地前进到新尾）。 */
-static Operand arrayElemAddr(InterCodeList **p, Node *e) {
+ * `*p` 后（`*p` 就地前进到新尾）。
+ *
+ * `allowPartial == 0`：走完下标必须落到 `TY_BASIC`（右值/左值路径的既有契约）。
+ * `allowPartial != 0`：允许结果仍是 `TY_ARRAY`（部分下标），返回其基地址操作数；
+ * 供 `translateArgs` 的数组实参路径使用。结构体等其它非标量仍然响亮失败。 */
+static Operand arrayElemAddr(InterCodeList **p, Node *e, int allowPartial) {
     Node *indices[MAX_INDEX_DIMS];
     Operand terms[MAX_INDEX_DIMS];
     int n = 0, nterms = 0, constOff = 0, i;
@@ -997,11 +1061,14 @@ static Operand arrayElemAddr(InterCodeList **p, Node *e) {
         }
     }
     if (cur->kind != TY_BASIC) {
-        /* 例：2 维局部数组 `r` 上的 `f(r[0])` —— `r[0]` 仍是数组。数组作**整体值**
-         * （含部分下标）不在本实验范围；绝不能把它当标量算出个"像那么回事"的地址。 */
-        fprintf(stderr, "internal error: 下标没有取到标量元素（部分下标得到数组）——"
-                        "数组/部分下标不能当标量值或实参使用 at line %d\n", nodeLine(e));
-        abort();
+        /* 部分下标得到数组。**实参路径**允许（A-3d）：返回的地址就是行/子数组的
+         * 基地址。其它路径（以及结构体等非数组非标量）仍响亮失败 —— 绝不能把它
+         * 当标量算出个"像那么回事"的值。 */
+        if (!(allowPartial && cur->kind == TY_ARRAY)) {
+            fprintf(stderr, "internal error: 下标没有取到标量元素（部分下标得到数组）——"
+                            "数组/部分下标不能当标量值使用 at line %d\n", nodeLine(e));
+            abort();
+        }
     }
 
     /* ★ 数组形参的运行时值已是基地址（opVar）；局部数组才取 &（opAddr）。 */
@@ -1049,7 +1116,7 @@ static Operand arrayElemAddr(InterCodeList **p, Node *e) {
  *   左值路径"本结点是个地址" —— 但**全仓库没有任何一处读它**（Task 11b 审查核实），
  *   等于文档承诺了一条并不存在的契约，故连同 translate.h 的说明一并删掉。 */
 static InterCodeList *translateIndex(InterCodeList *tail, Node *e, Operand place) {
-    Operand addr = arrayElemAddr(&tail, e);
+    Operand addr = arrayElemAddr(&tail, e, 0);
     if (place) {
         InterCode *c = newCode(IR_ASSIGN_DEREF);               /* place := *addr */
         c->u.deref.x = place; c->u.deref.y = addr;
@@ -1082,7 +1149,7 @@ static InterCodeList *translateField(InterCodeList *tail, Node *e, Operand place
 static InterCodeList *translateAssignToLValue(InterCodeList *tail, Node *e, Operand place) {
     Node *lhs = e->child[0];
     if (classifyExp(lhs) == EX_INDEX) {                        /* a[i] = <expr> */
-        Operand addr = arrayElemAddr(&tail, lhs);
+        Operand addr = arrayElemAddr(&tail, lhs, 0);
         Operand val = opVar(newTempName());
         InterCode *c;
         tail = translateExp(tail, e->child[2], val);           /* t := <右值> */

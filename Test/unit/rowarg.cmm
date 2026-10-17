@@ -1,0 +1,13 @@
+int sum(int a[2])
+{
+  return a[0] + a[1];
+}
+
+int main()
+{
+  int r[1][2];
+  r[0][0] = 3;
+  r[0][1] = 4;
+  write(sum(r[0]));
+  return 0;
+}

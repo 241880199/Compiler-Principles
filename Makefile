@@ -437,6 +437,14 @@ nested-shadow-test: parser
 manyargs-test: parser
 	@bash scripts/run_lab3.sh Test/unit/manyargs.cmm && echo "PASS manyargs-test"
 
+# ── 部分下标作为数组实参（A-3d 第四项）──────────────────────────────────────
+# `int r[1][2]` 的 `r[0]` 仍是数组；`sum(int a[2])` 按数组只比维数/基类型接受它。
+# 翻译层必须把行地址传给被调函数（`ARG t`，t 是 `&r + 0` 类地址），而不是在
+# arrayElemAddr 的"走完下标仍非标量"处 abort。变异自证：让实参路径的
+# allowPartial 继续 abort（或删掉 translateArgs 的数组分支）⇒ 无 IR ⇒ 本目标红。
+rowarg-test: parser
+	@bash scripts/run_lab3.sh Test/unit/rowarg.cmm && echo "PASS rowarg-test"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -451,7 +459,7 @@ manyargs-test: parser
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
         cond-test prog-test call-test arr-test builtin-test struct-test \
         array-guard-test label-test forward-test duplicate-locals-test \
-        nested-shadow-test manyargs-test
+        nested-shadow-test manyargs-test rowarg-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \
