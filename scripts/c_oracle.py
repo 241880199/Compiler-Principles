@@ -56,6 +56,9 @@ static void __load(void) {
 static int __read(void) { __load(); return __ip < __nin ? __in[__ip++] : 0; }
 /* 与虚拟机一致：'/' 被改写为向下取整（spec 3.7-1、暂定取舍 P1）。 */
 static int __div(int a, int b) { return (a / b) - ((a % b != 0) && ((a < 0) != (b < 0))); }
+/* C-- 的数组整体赋值 `a = b;` 是逐元素拷贝；C 不允许数组赋值，故 oracle 里
+   显式展开成循环。元素数由解析器按声明给出（语义层不比长度，取较小值）。 */
+static void __array_copy(int *a, const int *b, int n) { int i; for (i = 0; i < n; i++) a[i] = b[i]; }
 '''
 
 
@@ -95,6 +98,11 @@ class _Parser:
         self.toks = toks
         self.i = 0
         self.out = []           # 输出片段：token 文本 或 表达式代码串
+        # 数组名 -> 元素总数。只用于把 `a = b;`（两边都是数组名）展开成显式逐元素
+        # 拷贝 —— C 本身不允许数组赋值。作用域没有精确建模：同名标量声明会把条目
+        # 移除（C-- 允许内层遮蔽）；若遇到无法判定的情形，宁可在 gcc 处**响亮失败**，
+        # 也不猜一份期望值。
+        self.arrays = {}
 
     # -- 低层辅助 --
     def kind(self, k=0):
@@ -162,13 +170,26 @@ class _Parser:
     def parse_vardec(self):
         if self.kind() != "id":
             raise ParseError("VarDec：期待标识符，实得 %r" % self.text())
-        self.emit(self.next()[1])
+        name = self.next()[1]
+        self.emit(name)
+        dims = []
         while self.at("["):
             self.emit(self.take("[")[1])
             if self.kind() != "num":
                 raise ParseError("数组维度应为整型常数，实得 %r" % self.text())
-            self.emit(self.next()[1])
+            tok = self.next()[1]
+            self.emit(tok)
+            dims.append(int(tok))
             self.emit(self.take("]")[1])
+        if dims:
+            total = 1
+            for d in dims:
+                total *= d
+            self.arrays[name] = total
+        else:
+            # 同名标量声明（内层遮蔽等）：移除数组身份，避免把 `x = y` 误展开。
+            self.arrays.pop(name, None)
+        return name
 
     def parse_extdeclist(self):
         self.parse_vardec()
@@ -254,11 +275,22 @@ class _Parser:
     def parse_exp(self):
         return self.parse_assign()
 
+    def _is_array_name(self, s):
+        """s 是否是一个"裸数组变量名"（无下标），且当前登记为数组。"""
+        return (re.fullmatch(r"[A-Za-z_]\w*", s) is not None
+                and s in self.arrays)
+
     def parse_assign(self):
         left = self.parse_or()
         if self.at("="):
             self.take("=")
-            return "(%s = %s)" % (left, self.parse_assign())
+            right = self.parse_assign()
+            # C-- 特有：两边都是数组名时是逐元素拷贝（C 不允许数组赋值）。
+            # 取 min 与语义/翻译层一致（数组长度不参与判等）。
+            if self._is_array_name(left) and self._is_array_name(right):
+                n = min(self.arrays[left], self.arrays[right])
+                return "__array_copy(%s, %s, %d)" % (left, right, n)
+            return "(%s = %s)" % (left, right)
         return left
 
     def parse_or(self):

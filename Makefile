@@ -368,11 +368,14 @@ struct-test: parser
 	@bash Test/unit/test_struct.sh
 
 # ── 数组整体值守卫（最终整分支审查 Important 1）──────────────────────────────
-# 语义层对数组长度不参与判等，故 `a = b;` / `int a[2] = b;` 会被放行。翻译层
-# 必须把"数组名当整体标量值"变为**响亮失败**：否则产出 `v1 := v2`，参考机只改
-# `a[0]` —— 静默算错。判据 = 两个夹具分别 rc=134、stderr 含 `数组`、stdout 为空、
-# 输出 IR 为空（或未创建）；任一不满足即红。
-# 变异自证：去掉 translate.c 的 TY_ARRAY 守卫后两个用例都会变成 rc=0/有 IR ⇒ 本目标红。
+# 语义层对数组长度不参与判等，故数组整体赋值/初始化会被放行。A-3 起
+# `a = b;` / `int a[2] = b;` 走**逐元素拷贝**（见 array-copy-test）；数组整体值
+# 仍不能当标量使用。两个夹具覆盖**剩下仍必须响亮失败**的形态：
+#   · array_value.cmm      —— 嵌套赋值 `a = (b = a);`（赋值表达式的值当数组用）；
+#   · array_init_value.cmm —— 数组初值是一个赋值表达式（其值没有标量形态）。
+# 判据 = 分别 rc=134、stderr 含 `数组`、stdout 为空、输出 IR 为空（或未创建）。
+# 变异自证：去掉 translateAssign 的数组分派/守卫后，`(b = a)` 会被当标量产出
+# `v := ...` 并正常退出（有 IR）⇒ 本目标红。
 array-guard-test: parser
 	@bash -c 'rc=0; for c in array_value array_init_value; do \
 	    ir=$$(mktemp); out=$$(mktemp); err=$$(mktemp); \
@@ -489,6 +492,14 @@ global-test: parser
 	 bash scripts/run_lab3.sh Test/unit/global_scalar.cmm && \
 	 echo "PASS global-test"
 
+# ── 数组整体赋值（A-3）：逐元素拷贝 ─────────────────────────────────────────
+# 语义层对数组只比维数/基类型、不比长度，故 `a = b;` 合法；翻译层必须发逐元素
+# 拷贝循环，而不是把数组名当标量（参考机只改 a[0]，静默算错）或 abort。
+# 夹具输出 1/2（b 的两个元素）；变异自证：让 translateArrayCopy 只拷 1 个元素，
+# a[1] 不再被写 => 参考机输出与 .exp 的第二个值不符，本目标变红。
+array-copy-test: parser
+	@bash scripts/run_lab3.sh Test/unit/array_copy.cmm && echo "PASS array-copy-test"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -503,7 +514,7 @@ global-test: parser
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
         cond-test prog-test call-test arr-test builtin-test struct-test \
         array-guard-test label-test forward-test cli-test duplicate-locals-test \
-        nested-shadow-test manyargs-test rowarg-test global-test
+        nested-shadow-test manyargs-test rowarg-test global-test array-copy-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

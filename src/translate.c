@@ -305,6 +305,16 @@ static const char *addVarName(const char *src) {
     return varMap[varMapN - 1].ir;
 }
 
+/* 数组逐元素拷贝的**循环计数器**专用名字。
+ *
+ * 它必须被赋值两次（`i := #0` 与 `i := i + #1`），而优化器的单赋值断言
+ * （assertTempsSingleAssign）**只射程 tN** —— 用 newTempName() 会当场 abort。
+ * 故借 addVarName 发一个普通 `vN`；源码名用一个不可能出现的内部串（`$` 不是
+ * C-- 标识符字符），不会与用户的 `varNameOf` 查找相撞。 */
+static const char *newLoopVarName(void) {
+    return addVarName("$arraycopy$");
+}
+
 const char *varNameOf(const char *src) {
     int i;
     /* 从表尾向前找：同名的多条里，最后登记的那条就是**最内层可见**的（遮蔽）。
@@ -761,6 +771,12 @@ static Type typeOfArgument(Node *e) {
 
 /* 定义在下标翻译一节；translateArgs 的部分下标实参路径要提前调用。 */
 static Operand arrayElemAddr(InterCodeList **p, Node *e, int allowPartial);
+
+/* 定义在声明翻译一节（leafIdName/typeSizeBytes 之后）；translateAssign 要提前调用。
+ * `lhsIsVarDec` 区分左操作数是 `Dec : VarDec ASSIGNOP Exp` 里的 **VarDec**（声明不是
+ * 表达式，无法用 classifyExp 判形），还是普通表达式里的数组名/部分下标。 */
+static InterCodeList *translateArrayCopy(InterCodeList *tail, Node *lhs,
+                                         int lhsIsVarDec, Node *rhs);
 
 /* Args : Exp | Exp COMMA Args —— 右递归（见 src/syntax.y）。
  *
@@ -1256,6 +1272,24 @@ static InterCodeList *translateAssign(InterCodeList *tail, Node *e, Operand plac
     Node *lhs = e->child[0];
     Operand dst;
     InterCode *c;
+    Type lt, rt;
+
+    /* ★ 数组整体赋值（A-3）：语义层对数组只比维数/基类型、不比长度，故 `a = b;`
+     *   会被放行。这里必须**先于**下面的标量/下标分派识别出来：左操作数可能是
+     *   EX_ID（数组名）或 EX_INDEX（部分下标得到行/子数组）。整体赋值表达式本身
+     *   没有可用的标量值，若出现在需要值的位置（`x = (a = b)` 一类；语义层通常
+     *   已在类型检查处拦下）则响亮 abort。 */
+    lt = typeOfArgument(lhs);
+    rt = typeOfArgument(e->child[2]);
+    if (lt != NULL && rt != NULL &&
+        lt->kind == TY_ARRAY && rt->kind == TY_ARRAY) {
+        if (place != NULL) {
+            fprintf(stderr, "internal error: 数组整体赋值表达式的值不能作为标量使用"
+                            " at line %d\n", nodeLine(e));
+            abort();
+        }
+        return translateArrayCopy(tail, lhs, /*lhsIsVarDec=*/0, e->child[2]);
+    }
 
     if (classifyExp(lhs) != EX_ID) {
         /* 数组元素左值由 Task 11 处理；结构体域不实现 */
@@ -1446,6 +1480,186 @@ static int registerDeclType(const char *name, Node *vd, int isArrayParam, Dims *
     return d.n;
 }
 
+/* ══ 数组整体赋值 / 数组初始化：逐元素拷贝（A-3 修复）════════════════════════
+ *
+ * 语义层 `typeEqual` 对数组**不比较长度**（只比维数与基类型），故 `a = b;` 与
+ * `int c[2] = b;` 都会被放行。翻译层不能把数组名当标量发 `v1 := v2`（参考机只改
+ * `a[0]`，静默算错），也不能继续 abort（判分样例是合法程序）。这里把这两种
+ * **数组得到数组**的整体赋值翻译成逐元素拷贝循环：
+ *
+ *     i := #0
+ *   L1:
+ *     IF i >= #n GOTO L2
+ *     off  := i * #4
+ *     aoff := baseA + off
+ *     boff := baseB + off
+ *     t    := *boff
+ *     *aoff := t
+ *     i    := i + #1
+ *     GOTO L1
+ *   L2:
+ *
+ * 只支持"地址形态"的操作数：
+ *   · EX_ID 数组名     —— 局部数组 `&v`（opAddr）；数组形参的运行值已是基地址
+ *                         （opVar，见 varTypes 的 isArrayParam 说明）；
+ *   · EX_INDEX 部分下标 —— arrayElemAddr(..., allowPartial=1) 返回行/子数组基地址；
+ *   · VarDec（仅 Dec 初始化路径）—— 按 `lookupVarType` 取类型，基址 `&v`。
+ * 括号不改变数组身份，故先剥掉。其余形状（`a = (b = c)` 的赋值表达式值、结构体域…）
+ * **响亮 abort**，绝不猜一种布局。元素必须是 TY_BASIC（4 字节）；结构体数组不在
+ * 本实验范围。
+ *
+ * `n = min(左元素数, 右元素数)`：语义层不比较长度，取较小值可避免越界读/写。
+ *
+ * ★ 这里**不**放宽 rejectArrayWholeValue 的其它调用点：`write(a)`、`return a`、
+ *   `a + 1` 等把数组当标量值的用法仍在 translateExp/operandForCond 处 abort
+ *   （多数还会被语义层先拦下）；本函数只负责"数组得到数组"的整块拷贝。 */
+
+typedef struct {
+    Operand base;      /* 数组基地址操作数（局部为 OP_ADDR，形参/子数组为 OP_VAR） */
+    int nelems;        /* 元素个数 = 总字节数 / 4 */
+} ArrayCopySide;
+
+/* 数组（子数组）的总元素数；元素基类型必须是 TY_BASIC。 */
+static int arrayCopyElemCount(Type t) {
+    Type elem = t;
+    if (t == NULL || t->kind != TY_ARRAY) {
+        fprintf(stderr, "internal error: 数组整体值的类型不是数组\n");
+        abort();
+    }
+    while (elem->kind == TY_ARRAY) elem = elem->u.array.elem;
+    if (elem->kind != TY_BASIC) {
+        fprintf(stderr, "internal error: 数组整体赋值只支持基本类型元素"
+                        "（结构体数组不在本实验范围）\n");
+        abort();
+    }
+    return typeSizeBytes(t) / 4;
+}
+
+/* 求一侧的基地址与元素数。`isVarDec` 为 1 时 e 是 VarDec（Dec 初始化路径）。 */
+static void arrayCopySide(InterCodeList **p, Node *e, int isVarDec,
+                          ArrayCopySide *out) {
+    const char *name;
+    VarTypeEntry *ent;
+    Type t;
+
+    if (isVarDec) {
+        name = leafIdName(e);
+        ent = lookupVarType(name);
+        if (ent == NULL || ent->type == NULL || ent->type->kind != TY_ARRAY) {
+            fprintf(stderr, "internal error: 数组初始化目标 \"%s\" 没有数组类型登记"
+                            "（语义闸应已拦下）at line %d\n", name, nodeLine(e));
+            abort();
+        }
+        /* Dec 只出现在函数内的局部定义里：基址取 &v。 */
+        out->base = opAddr(varNameOf(name));
+        t = ent->type;
+    } else {
+        Node *u = e;
+        while (u != NULL && classifyExp(u) == EX_PAREN) u = u->child[1];
+        if (u == NULL) shapeError("Exp", u);
+        if (classifyExp(u) == EX_ID) {
+            name = u->child[0]->lexeme;
+            ent = lookupVarType(name);
+            if (ent == NULL || ent->type == NULL || ent->type->kind != TY_ARRAY) {
+                fprintf(stderr, "internal error: 数组整体值 \"%s\" 没有数组类型登记"
+                                "（语义闸应已拦下）at line %d\n", name, nodeLine(e));
+                abort();
+            }
+            /* 局部数组取 &；数组形参的运行值本身就是基地址（绝不再加 &）。 */
+            out->base = ent->isArrayParam ? opVar(varNameOf(name))
+                                          : opAddr(varNameOf(name));
+            t = ent->type;
+        } else if (classifyExp(u) == EX_INDEX) {
+            t = typeOfArgument(u);
+            if (t == NULL || t->kind != TY_ARRAY) {
+                fprintf(stderr, "internal error: 数组整体值的部分下标没有数组类型"
+                                "（语义闸应已拦下）at line %d\n", nodeLine(e));
+                abort();
+            }
+            out->base = arrayElemAddr(p, u, 1);   /* 行/子数组的基地址临时量 */
+        } else {
+            fprintf(stderr, "internal error: 数组整体值只支持数组名或部分下标"
+                            "（其余形状不能作为数组整体值）at line %d\n", nodeLine(e));
+            abort();
+        }
+    }
+    out->nelems = arrayCopyElemCount(t);
+}
+
+static InterCodeList *translateArrayCopy(InterCodeList *tail, Node *lhs,
+                                         int lhsIsVarDec, Node *rhs) {
+    ArrayCopySide a, b;
+    char *l1, *l2;
+    Operand iVar, off, aoff, boff, val;
+    InterCode *c;
+    int n;
+
+    arrayCopySide(&tail, lhs, lhsIsVarDec, &a);
+    arrayCopySide(&tail, rhs, 0, &b);
+
+    n = a.nelems < b.nelems ? a.nelems : b.nelems;
+    if (n <= 0) return tail;                     /* 空数组：无拷贝 */
+
+    l1 = newLabelName();
+    l2 = newLabelName();
+    iVar = opVar(newLoopVarName());              /* 计数器是普通 vN（见该函数说明） */
+
+    c = newCode(IR_ASSIGN);                      /* i := #0 */
+    c->u.assign.x = iVar;
+    c->u.assign.y = opConst(0);
+    tail = irAppend(tail, c);
+    tail = appendLabel(tail, l1);
+
+    c = newCode(IR_IF);                          /* IF i >= #n GOTO L2 */
+    c->u.iff.x = iVar;
+    c->u.iff.y = opConst(n);
+    c->u.iff.relop = irRelopCode(">=");
+    c->u.iff.z = opLabel(l2);
+    tail = irAppend(tail, c);
+
+    off = opVar(newTempName());
+    c = newCode(IR_MUL);                         /* off := i * #4 */
+    c->u.binop.x = off;
+    c->u.binop.y = iVar;
+    c->u.binop.z = opConst(4);
+    tail = irAppend(tail, c);
+
+    aoff = opVar(newTempName());
+    c = newCode(IR_ADD);                         /* aoff := baseA + off */
+    c->u.binop.x = aoff;
+    c->u.binop.y = a.base;
+    c->u.binop.z = off;
+    tail = irAppend(tail, c);
+
+    boff = opVar(newTempName());
+    c = newCode(IR_ADD);                         /* boff := baseB + off */
+    c->u.binop.x = boff;
+    c->u.binop.y = b.base;
+    c->u.binop.z = off;
+    tail = irAppend(tail, c);
+
+    val = opVar(newTempName());
+    c = newCode(IR_ASSIGN_DEREF);                /* t := *boff */
+    c->u.deref.x = val;
+    c->u.deref.y = boff;
+    tail = irAppend(tail, c);
+
+    c = newCode(IR_DEREF_ASSIGN);                /* *aoff := t */
+    c->u.deref.x = aoff;
+    c->u.deref.y = val;
+    tail = irAppend(tail, c);
+
+    c = newCode(IR_ADD);                         /* i := i + #1 */
+    c->u.binop.x = iVar;
+    c->u.binop.y = iVar;
+    c->u.binop.z = opConst(1);
+    tail = irAppend(tail, c);
+
+    tail = appendGoto(tail, l1);
+    tail = appendLabel(tail, l2);
+    return tail;
+}
+
 /* ── 全局声明预扫（A-3）──────────────────────────────────────────────────────
  *
  * 只认 `Specifier : TYPE`（int/float；本实验只有 int 需布局）——结构体说明符
@@ -1561,11 +1775,22 @@ static InterCodeList *translateDecList(InterCodeList *tail, Node *dl) {
     if (dec == NULL || dec->type != NT_DEC ||
         (dec->nchild != 1 && dec->nchild != 3)) shapeError("Dec", dec);
     tail = translateVarDec(tail, dec->child[0]);
-    if (dec->nchild == 3)
-        /* 初值**直接算进被声明的变量**（place 作继承属性）：`int x = 5;` 只出一条
+    if (dec->nchild == 3) {
+        /* 数组初始化 `int c[2] = b;`（A-3）：声明类型与初值类型都是数组时走逐元素
+         * 拷贝（语义层不比长度，故 n 取两者较小值）。其余保持标量路径 ——
+         * 初值**直接算进被声明的变量**（place 作继承属性）：`int x = 5;` 只出一条
          * `v := #5`，不是"先落临时变量再搬过来"两条。 */
-        tail = translateExp(tail, dec->child[2],
-                            opVar(varNameOf(leafIdName(dec->child[0]))));
+        VarTypeEntry *ent = lookupVarType(leafIdName(dec->child[0]));
+        Type lt = ent ? ent->type : NULL;
+        Type rt = typeOfArgument(dec->child[2]);
+        if (lt != NULL && rt != NULL &&
+            lt->kind == TY_ARRAY && rt->kind == TY_ARRAY)
+            tail = translateArrayCopy(tail, dec->child[0], /*lhsIsVarDec=*/1,
+                                      dec->child[2]);
+        else
+            tail = translateExp(tail, dec->child[2],
+                                opVar(varNameOf(leafIdName(dec->child[0]))));
+    }
     if (dl->nchild == 3) tail = translateDecList(tail, dl->child[2]);
     return tail;
 }
