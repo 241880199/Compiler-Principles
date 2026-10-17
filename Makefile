@@ -152,9 +152,12 @@ ir-abort-test: Test/unit/test_ir_abort
 # 链接翻译层本体（src/translate.c）而不是它的副本 —— 测的必须是真正要跑的那份
 # classifyExp/classifyStmt。translate.c 的 translateProgram 返回 irList()，
 # 故 src/ir.c 必须一起链（ir.c 依赖 util.c，已在链上）。
+# ★ Task 13 起 translate.c 还要在翻译期重建变量类型（typeBasic/typeArrayFromDims，
+#   供高维下标的步长用），故 src/type.c 也必须一起链。
 Test/unit/test_expkind: Test/unit/test_expkind.c src/translate.c src/translate.h \
-                        src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h
-	$(CC) $(CFLAGS) -o $@ Test/unit/test_expkind.c src/translate.c src/tree.c src/util.c src/ir.c
+                        src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h \
+                        src/type.c src/type.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_expkind.c src/translate.c src/tree.c src/util.c src/ir.c src/type.c
 
 # 判据是**退出码**：本单测自己会统计 failures 并 return failures ? 1 : 0，
 # 提示写 stderr（故不能用上面那批「打印到 stdout 再整体 diff」的写法）。
@@ -170,8 +173,9 @@ expkind-test: Test/unit/test_expkind
 # 其余用例（二元/取负/链式赋值/括号/值不被需要）写 stderr、以退出码为判据
 # （`-o pipefail` 让非 0 退出码同样能判红），**不往 stdout 写一个字节**。
 Test/unit/test_translate: Test/unit/test_translate.c src/translate.c src/translate.h \
-                          src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h
-	$(CC) $(CFLAGS) -o $@ Test/unit/test_translate.c src/translate.c src/tree.c src/util.c src/ir.c
+                          src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h \
+                          src/type.c src/type.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_translate.c src/translate.c src/tree.c src/util.c src/ir.c src/type.c
 
 translate-test: Test/unit/test_translate
 	@bash -o pipefail -c './Test/unit/test_translate | diff -u Test/unit/translate_exp_expected.txt -' \
@@ -184,11 +188,12 @@ translate-test: Test/unit/test_translate
 # 两种写法跑出来的程序结果完全相同，端到端一个字都察觉不到 —— 只能靠逐字节比对钉。
 # 其余用例（六个 relop 的映射、NOT 的目标互换、AND/OR 短路、条件作值、place 为空）
 # 写 stderr、以退出码为判据（`-o pipefail` 让非 0 退出码同样判红），**不往 stdout
-# 写一个字节**。链接行与 translate-test 一致：translate.c 只用 ir/tree/util 的符号
-# （symtab.h/type.h 只是 include，没有调用），故**不需要**链 src/symtab.c、src/type.c。
+# 写一个字节**。链接行与 translate-test 一致；Task 13 起 translate.c 还调用
+# typeBasic/typeArrayFromDims，故 src/type.c 也要一起链（symtab.c 仍不需要）。
 Test/unit/test_cond: Test/unit/test_cond.c src/translate.c src/translate.h \
-                     src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h
-	$(CC) $(CFLAGS) -o $@ Test/unit/test_cond.c src/translate.c src/tree.c src/util.c src/ir.c
+                     src/tree.c src/tree.h src/util.c src/util.h src/ir.c src/ir.h \
+                     src/type.c src/type.h
+	$(CC) $(CFLAGS) -o $@ Test/unit/test_cond.c src/translate.c src/tree.c src/util.c src/ir.c src/type.c
 
 cond-test: Test/unit/test_cond
 	@bash -o pipefail -c './Test/unit/test_cond | diff -u Test/unit/cond_expected.txt -' \
@@ -222,9 +227,10 @@ cond-test: Test/unit/test_cond
 # 故关系条件加回后**没有**丢掉原来那两条被测分支。
 Test/unit/test_translate_prog: Test/unit/test_translate_prog.c lex.yy.c syntax.tab.c \
                                src/tree.c src/report.c src/util.c src/translate.c src/ir.c \
-                               src/tree.h src/report.h src/util.h src/translate.h src/ir.h
+                               src/type.c src/tree.h src/report.h src/util.h src/translate.h \
+                               src/ir.h src/type.h
 	$(CC) $(CFLAGS) -I. -o $@ Test/unit/test_translate_prog.c lex.yy.c syntax.tab.c \
-	      src/tree.c src/report.c src/util.c src/translate.c src/ir.c -lfl
+	      src/tree.c src/report.c src/util.c src/translate.c src/ir.c src/type.c -lfl
 
 # 三条防线（照 scripts/run_tests.sh 的 check_one 写法，不另创一套）：
 #   ① stderr **单独**捕获、非空即判红 —— "正常流程不写 stderr"这条约束此前**没有任何门**

@@ -1,0 +1,21 @@
+int main()
+{
+    int b[6];
+    int i;
+    int s;
+    i = 0;
+    while (i < 6)
+    {
+        b[i] = i * i;
+        i = i + 1;
+    }
+    s = 0;
+    i = 0;
+    while (i < 6)
+    {
+        s = s + b[i] + b[5 - i];
+        i = i + 1;
+    }
+    write(s);
+    return 0;
+}

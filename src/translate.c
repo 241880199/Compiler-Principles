@@ -1,7 +1,7 @@
 /* AST -> IR。本文件当前含**形状判别表**、**表达式翻译**、**条件翻译**、
- * **语句/复合语句/函数定义翻译**（Task 10）、**调用 / read·write / 一维数组下标**
- * （Task 11）；translateProgram 已是真实现（遍历 Program -> ExtDefList），
- * 只差 Task 12 把 src/main.c 接上来。
+ * **语句/复合语句/函数定义翻译**（Task 10）、**调用 / read·write / 数组下标**
+ * （Task 11 一维；Task 13 高维 + 地址一次线性化）；translateProgram 已是真实现
+ * （遍历 Program -> ExtDefList），只差 Task 12 把 src/main.c 接上来。
  *
  * 判别表放在这里而不是散在各翻译函数里：它是整层唯一"读懂语法树结构"的地方，
  * 判错时错的是整棵树的语义，且生成的 IR 往往"看着挺像那么回事"——
@@ -24,7 +24,7 @@
  *   f()              -> translateCall0（Task 11）
  *   f(Args)          -> translateCallN（Task 11）
  *   write(Exp)       -> translateCallN（Task 11）
- *   Exp1[Exp2]       -> translateIndex（Task 11）
+ *   Exp1[Exp2]       -> translateIndex（Task 11；Task 13 起任意维数）
  *   Exp1.ID          -> translateField（选做 3.1，本实验不实现）
  *
  * 表中**尚未实现**的只剩 `translateField`（选做 3.1）—— 它一律落**响亮失败的桩**：
@@ -133,6 +133,33 @@ static int tmpSeq = 0, labelSeq = 0, varSeq = 0;
 static struct { const char *src; const char *ir; } varMap[1024];
 static int varMapN = 0;
 
+/* ══ 源码名 -> 类型登记表（Task 13）══════════════════════════════════════════
+ *
+ * 为什么需要它：`arrayElemAddr` 要按**元素类型的字节数**求每一维的步长，而语义层
+ * 在 `semanticAnalyze` 返回前已经把函数作用域**弹出**了 —— 翻译时 `symLookup` 看不到
+ * 局部变量（更不消说函数形参）。要求书假设 4 保证无全局变量、所有名字全局唯一，
+ * 故一张**翻译层自己的、平的名字 -> 类型表**就足够且安全。
+ *
+ * 只在 `translateVarDec`（局部变量）与 `translateVarListAsParams`（形参）里登记；
+ * `translateResetNames` 一并清空。名字用 xstrdup 复制（AST 的 lexeme 虽然活到进程结束，
+ * 但沿 varMap 的既有做法走，不依赖调用方保活）。
+ *
+ * `isArrayParam` 只为**响亮失败**服务：数组形参在真机上收到的本身就是基地址，
+ * 不能像局部数组那样再取 `&`（见 P5，Task 14）。Task 13 不处理数组形参，故
+ * `arrayElemAddr` 一旦发现基名是数组形参就当场 abort —— 绝不静默按局部数组算。
+ *
+ * 表定长，写入前必须查容量（同 varMap 的纪律：溢出是**静默越界写**，不是响亮失败）。
+ * 重复登记同样响亮 abort：假设 4 下不可能发生；真发生了说明翻译层把同一个声明翻了
+ * 两遍或语义闸漏了重复定义，两种都必须当场暴露，不能被后一次静默覆盖。 */
+typedef struct {
+    const char *name;
+    Type        type;
+    int         isArrayParam;
+} VarTypeEntry;
+
+static VarTypeEntry varTypes[1024];
+static int varTypesN = 0;
+
 char *newTempName(void) {
     char buf[32];
     snprintf(buf, sizeof buf, "t%d", ++tmpSeq);
@@ -175,7 +202,41 @@ void translateResetNames(void) {
         free((void *)varMap[i].src);
         free((void *)varMap[i].ir);
     }
+    /* 类型登记表一并清空（同 varMap）。**只 free 名字**；Type 对象是 type.c 用
+     * xmalloc 建的一次性结构，本文件不拥有、也不在别处释放 —— 与整个编译器
+     * "一次进程、退出即回收"的既有口径一致，别在这里顺手加一套递归 free。 */
+    for (i = 0; i < varTypesN; i++) free((void *)varTypes[i].name);
     tmpSeq = labelSeq = varSeq = varMapN = 0;
+    varTypesN = 0;
+}
+
+/* 登记一个源码名及其类型。重复 / 溢出都**响亮 abort**（理由见 varTypes 的说明）。 */
+static void registerVarType(const char *name, Type t, int isArrayParam) {
+    int i;
+    for (i = 0; i < varTypesN; i++) {
+        if (strcmp(varTypes[i].name, name) == 0) {
+            fprintf(stderr, "internal error: 变量 \"%s\" 的类型被登记了两次"
+                            "（假设 4 下不应发生；语义闸是否漏了重复定义？）\n", name);
+            abort();
+        }
+    }
+    if (varTypesN >= (int)(sizeof varTypes / sizeof varTypes[0])) {
+        fprintf(stderr, "internal error: varTypes 溢出（>1024 个变量名）\n");
+        abort();
+    }
+    varTypes[varTypesN].name = xstrdup(name);
+    varTypes[varTypesN].type = t;
+    varTypes[varTypesN].isArrayParam = isArrayParam;
+    varTypesN++;
+}
+
+/* 查不到返回 NULL；调用方（arrayElemAddr）必须把 NULL 当**响亮失败**处理，
+ * 不得退化成"按 4 字节一步"猜一种布局。 */
+static VarTypeEntry *lookupVarType(const char *name) {
+    int i;
+    for (i = 0; i < varTypesN; i++)
+        if (strcmp(varTypes[i].name, name) == 0) return &varTypes[i];
+    return NULL;
 }
 
 /* ══ 条件翻译（Task 9）══════════════════════════════════════════════════════
@@ -578,63 +639,182 @@ static InterCodeList *translateCallN(InterCodeList *tail, Node *e, Operand place
       return irAppend(tail, c); }
 }
 
-/* ══ 一维数组下标（Task 11）════════════════════════════════════════════════════
+/* ══ 数组下标（Task 11 一维；Task 13 高维 + 地址一次线性化）════════════════════
  *
- * `a[i]` 的**元素字节地址** = `&a + i*4`。这里的 `&a` 是 OP_ADDR（渲染成 `&a`），
- * 只用在"自己就带 &"的位置（ARITH 的操作数），**不是**喂给 IR_ADDR 的那个（见 ir.h
- * 顶部的"两个 & 的分工"）。
- *   · i 是常量 K ⇒ 折叠：`addr := &a + #(4K)`；K==0 时省一条 ⇒ `addr := &a`。
- *   · i 是表达式 ⇒ `idx := i` / `off := idx * #4` / `addr := &a + off`。 */
+ * `a[i][j]…` 的**元素字节地址** = `&a + Σ(k_d * stride_d)`，其中 `stride_d` 是
+ * "走过第 d 个下标后剩下的元素类型"的字节数。本实现**从不物化行地址**：
+ * 逐维只发一条 `MUL`（变量下标）并把常量下标累加进 `constOff`，最后只做一次
+ * `addr := &a + total`。与"先把 `&a[i]` 算出来、再在它上面加 `j*4`"的链式写法相比，
+ * 后者每多一维就多一条 ADD，且在常量下标处还会留下可折叠的中间量。
+ *
+ * 例（int r[1][2] 的 r[0][i]）：
+ *     idx := i                 （变量下标才发）
+ *     off := idx * #4
+ *     addr := &r + off         （0*8 已折进 constOff==0，整条消失）
+ *
+ * 步长由**类型链**给出：`typeSizeBytes(cur->u.array.elem)`。类型从翻译层自己的
+ * 名字 -> 类型登记表取（见 varTypes 处说明）——语义层的局部作用域此时已弹出，
+ * `symLookup` 用不了。
+ *
+ * 失败形态（都与本文件其余位置一致：响亮 abort，绝不猜一种布局）：
+ *   · 基础表达式不是 ID（`f()[i]` 等）—— 不在本任务范围；
+ *   · 基础名没有类型登记 / 登记的不是数组 —— 语义闸（错误 10）应已拦下；
+ *   · 基础名是**数组形参** —— 形参收到的本身就是基地址，不能取 `&`，属 Task 14；
+ *   · 下标层数超过数组维数 / 走完下标仍不是标量 —— 语义闸应已拦下。
+ *
+ * `&a` 是 OP_ADDR（渲染成 `&a`），只用在"自己就带 &"的位置（ARITH 的操作数），
+ * **不是**喂给 IR_ADDR 的那个（见 ir.h 顶部的"两个 & 的分工"）。 */
 
-/* 计算 `Exp1[Exp2]` 的元素地址到一个**新临时变量**并返回该操作数；新增 IR 挂在 `*p` 后
- * （`*p` 就地前进到新尾）。
- *
- * 本任务只支持**一维、基础表达式是数组名（ID）**。基础表达式非数组名（如 `f()[i]`、
- * 结构体域下标）一律**响亮失败**，绝不静默按一维数组算 —— 那会产出一份看着挺像那么回事、
- * 地址却算错的 IR，端到端测不出来。
- * ★ **已知边界（不是本函数能判的）**：数组**形参**的名字也是 ID，而本层**没有类型信息**
- *   （只看得到名字），无法与普通数组名区分 ⇒ 若输入出现数组形参，这里会按普通数组算
- *   `&a + i*4`（错）。brief 把"数组形参"划归 **Task 14**（那里会另行处理"基础表达式本身
- *   已是地址"的情形），故本任务范围内不涉及；此处如实标注，不假装它能判。 */
+/* 下标链的定长缓冲容量。与 Dims.dims 的 8 一致；超出即响亮 abort（绝不静默越界）。 */
+#define MAX_INDEX_DIMS 8
+
+/* 一个类型的字节数。本实验只有 int/float（都 4 字节）与数组；结构体是选做 3.1，
+ * 由 Task 15 的语义闸拦住 —— 走到这里说明闸漏了，故响亮失败而不是猜 4。 */
+static int typeSizeBytes(Type t) {
+    if (t == NULL) {
+        fprintf(stderr, "internal error: typeSizeBytes 收到 NULL 类型\n");
+        abort();
+    }
+    switch (t->kind) {
+    case TY_BASIC:
+        return 4;
+    case TY_ARRAY:
+        return t->u.array.size * typeSizeBytes(t->u.array.elem);
+    case TY_STRUCTURE:
+    case TY_UNKNOWN:
+    default:
+        fprintf(stderr, "internal error: typeSizeBytes 遇到不支持的类型 kind=%d"
+                        "（结构体属选做 3.1，应由语义闸拦下）\n", (int)t->kind);
+        abort();
+    }
+    return 0;   /* 不可达；只为让"所有路径都有返回值"显式 */
+}
+
+/* 把 `E0[E1]…[Ek]` 的整条下标链按**源码从左到右**收进 indices，返回剥掉括号的
+ * 基础表达式。`a[i][j]` 的 AST 是 `(a[i])[j]` —— 先递归 child[0]（更靠左的下标），
+ * 再记本层，故 indices = [i, j]。括号不产生 IR，链上每一层都剥掉。 */
+static Node *collectIndexChain(Node *e, Node **indices, int *n) {
+    while (e != NULL && classifyExp(e) == EX_PAREN) e = e->child[1];
+    if (e == NULL) shapeError("Exp[Exp]", e);
+    if (classifyExp(e) == EX_INDEX) {
+        Node *base;
+        if (e->nchild != 4 || e->child[0] == NULL || e->child[2] == NULL)
+            shapeError("Exp[Exp]", e);
+        base = collectIndexChain(e->child[0], indices, n);
+        if (*n >= MAX_INDEX_DIMS) {
+            fprintf(stderr, "internal error: 下标维数超过 %d（arrayElemAddr 定长缓冲）\n",
+                    MAX_INDEX_DIMS);
+            abort();
+        }
+        indices[(*n)++] = e->child[2];
+        return base;
+    }
+    return e;
+}
+
+/* 计算 `Exp1[Exp2]…` 的元素地址到一个**新临时变量**并返回该操作数；新增 IR 挂在
+ * `*p` 后（`*p` 就地前进到新尾）。 */
 static Operand arrayElemAddr(InterCodeList **p, Node *e) {
-    Node *idxExp, *b;
+    Node *indices[MAX_INDEX_DIMS];
+    Operand terms[MAX_INDEX_DIMS];
+    int n = 0, nterms = 0, constOff = 0, i;
+    Node *b;
+    VarTypeEntry *ent;
+    Type cur;
     Operand base, addr;
     InterCode *c;
 
-    /* e = Exp LB Exp RB（classifyExp 判为 EX_INDEX ⇒ nchild==4 且 child[1] 是 LB）。 */
-    if (e == NULL || e->nchild != 4) shapeError("Exp[Exp]", e);
-    /* 基础表达式剥掉括号后必须是数组名（`(a)[i]` 与 `a[i]` 同义，括号不产生 IR）。 */
-    b = e->child[0];
-    while (b != NULL && classifyExp(b) == EX_PAREN) b = b->child[1];
+    if (e == NULL || classifyExp(e) != EX_INDEX) shapeError("Exp[Exp]", e);
+    b = collectIndexChain(e, indices, &n);
+
     if (b == NULL || classifyExp(b) != EX_ID) {
-        fprintf(stderr, "internal error: 数组下标的基础表达式只能是数组名（本任务仅一维；"
-                        "高维属 Task 13、数组形参属 Task 14）at line %d\n", nodeLine(e));
+        fprintf(stderr, "internal error: 数组下标的基础表达式只能是数组名"
+                        "（其它基础表达式不在本任务；数组形参属 Task 14）at line %d\n",
+                nodeLine(e));
         abort();
     }
-    base = opAddr(varNameOf(b->child[0]->lexeme));             /* b 是 Exp:ID */
-    idxExp = e->child[2];
+    ent = lookupVarType(b->child[0]->lexeme);
+    if (ent == NULL) {
+        fprintf(stderr, "internal error: 变量 \"%s\" 没有类型登记"
+                        "（语义闸应已拦下；见 varTypes 的说明）at line %d\n",
+                b->child[0]->lexeme, nodeLine(e));
+        abort();
+    }
+    if (ent->isArrayParam) {
+        fprintf(stderr, "internal error: 数组形参 \"%s\" 的下标属 Task 14"
+                        "（形参收到的本身就是基地址，不能再取 &）at line %d\n",
+                ent->name, nodeLine(e));
+        abort();
+    }
+    if (ent->type == NULL || ent->type->kind != TY_ARRAY) {
+        fprintf(stderr, "internal error: 对非数组变量 \"%s\" 取下标"
+                        "（语义闸的错误 10 应已拦下）at line %d\n",
+                ent->name, nodeLine(e));
+        abort();
+    }
 
-    if (classifyExp(idxExp) == EX_INT) {                       /* ★ 常量下标折叠 */
-        int k = atoi(idxExp->child[0]->lexeme);
+    cur = ent->type;
+    for (i = 0; i < n; i++) {
+        Node *idxExp = indices[i];
+        int stride;
+        if (cur->kind != TY_ARRAY) {
+            fprintf(stderr, "internal error: 下标层数超过数组 \"%s\" 的维数"
+                            "（语义闸应已拦下）at line %d\n", ent->name, nodeLine(e));
+            abort();
+        }
+        cur = cur->u.array.elem;                               /* 进一层元素类型 */
+        stride = typeSizeBytes(cur);                           /* 本维步长 */
+        if (classifyExp(idxExp) == EX_INT) {                       /* ★ 常量下标折叠 */
+            /* 整条 idx/off 都不发，只累加常数偏移。 */
+            constOff += atoi(idxExp->child[0]->lexeme) * stride;
+        } else {
+            Operand idx = opVar(newTempName());
+            Operand off = opVar(newTempName());
+            *p = translateExp(*p, idxExp, idx);                /* idx := <下标表达式> */
+            c = newCode(IR_MUL);                               /* off := idx * #stride */
+            c->u.binop.x = off; c->u.binop.y = idx; c->u.binop.z = opConst(stride);
+            *p = irAppend(*p, c);
+            terms[nterms++] = off;
+        }
+    }
+    if (cur->kind != TY_BASIC) {
+        fprintf(stderr, "internal error: 下标没有取到标量元素（数组值 / 部分下标不在本任务）"
+                        " at line %d\n", nodeLine(e));
+        abort();
+    }
+
+    base = opAddr(varNameOf(b->child[0]->lexeme));             /* b 是 Exp:ID */
+
+    /* ── 地址一次线性化：所有变量项先求和（含常数项），最后只加一次 &base ── */
+    if (nterms == 0) {
         addr = opVar(newTempName());
-        if (k == 0) {                                          /* `addr := &a`（省一条 ADD） */
+        if (constOff == 0) {                                   /* `addr := &a`（省一条 ADD） */
             c = newCode(IR_ASSIGN);
             c->u.assign.x = addr; c->u.assign.y = base;
-        } else {                                               /* `addr := &a + #(4K)` */
+        } else {                                               /* `addr := &a + #constOff` */
             c = newCode(IR_ADD);
-            c->u.binop.x = addr; c->u.binop.y = base; c->u.binop.z = opConst(4 * k);
+            c->u.binop.x = addr; c->u.binop.y = base; c->u.binop.z = opConst(constOff);
         }
         *p = irAppend(*p, c);
-    } else {                                                   /* 变量下标 */
-        Operand idx = opVar(newTempName());
-        Operand off = opVar(newTempName());
-        *p = translateExp(*p, idxExp, idx);                    /* idx := <下标表达式> */
-        c = newCode(IR_MUL);                                   /* off := idx * #4 */
-        c->u.binop.x = off; c->u.binop.y = idx; c->u.binop.z = opConst(4);
-        *p = irAppend(*p, c);
+    } else {
+        Operand total = terms[0];
+        for (i = 1; i < nterms; i++) {
+            Operand t = opVar(newTempName());
+            c = newCode(IR_ADD);
+            c->u.binop.x = t; c->u.binop.y = total; c->u.binop.z = terms[i];
+            *p = irAppend(*p, c);
+            total = t;
+        }
+        if (constOff != 0) {
+            Operand t = opVar(newTempName());
+            c = newCode(IR_ADD);
+            c->u.binop.x = t; c->u.binop.y = total; c->u.binop.z = opConst(constOff);
+            *p = irAppend(*p, c);
+            total = t;
+        }
         addr = opVar(newTempName());
-        c = newCode(IR_ADD);                                   /* addr := &a + off */
-        c->u.binop.x = addr; c->u.binop.y = base; c->u.binop.z = off;
+        c = newCode(IR_ADD);                                   /* addr := &a + total */
+        c->u.binop.x = addr; c->u.binop.y = base; c->u.binop.z = total;
         *p = irAppend(*p, c);
     }
     return addr;
@@ -868,23 +1048,27 @@ static const char *leafIdName(Node *vd) {
     return vd->child[0]->lexeme;
 }
 
-/* ── 数组声明的维数与总字节数（Task 11）────────────────────────────────────
+/* ── 数组声明的维数（Task 11；Task 13 起必须给出**顺序正确**的维度链）──────────
  *
- * `VarDec : ID | VarDec LB INT RB`，沿 child[0] 下行收集。dims 的收集顺序是
- * **最内层在前**（先递归到内层、再记本层），与 type.h 的 `typeArrayFromDims` 同一约定
- * （设计文档 §5.1 / 记忆里那条"数组维度顺序"的坑）：`int a[10][2]` 的 AST 是
- * `VarDec[VarDec[VarDec[a],LB,2,RB],LB,10,RB]` ⇒ 先得 2、再得 10 ⇒ dims=[2,10]。
- * 本任务只有一维（长度不参与判等，故反了端到端测不出来）—— 约定仍必须写对。
+ * `VarDec : ID | VarDec LB INT RB`。语法是**左递归**的，故树的最外层结点带的是
+ * **源码里最后一个方括号**：`int a[10][2]` 的 AST 是
+ * `VarDec[VarDec[VarDec[a],LB,10,RB],LB,2,RB]`。C 语义要求第一个方括号是最外维，
+ * 而 `typeArrayFromDims` 的左折叠要求 dims **最内层在前** ⇒ 对 `a[10][2]` 必须是
+ * dims=[2,10]（设计文档 §5.1）。
+ * 所以这里**先记本层、再沿 child[0] 下行**（前序），得到的正是 [2,10]。
+ *
+ * ★ 这是 Task 13 修掉的一个**潜伏错误**：原先写成"先递归再记本层"（后序），
+ *   对 `a[10][2]` 得到 [10,2] —— 乘积不变，而 Task 11 只用总字节数，故当时没有任何
+ *   症状；但用它构造 Type 会得到 `array(2, array(10,int))`，每一维的步长全反，
+ *   高维下标的地址会静默算错。`src/semantic.c` 的 analyzeVarDec 用的就是前序
+ *   （先记本层），本函数现在与它、与 type.h 的约定一致。
  *
  * Dims.dims 定长：写入前查容量（同 varMap 的纪律）—— 溢出会**静默越界写**，
  * 那不是本仓库的失败形态。
  *
- * ★ 取值前先过形状闸（Task 11b 审查补上）：本函数原先只判 `nchild == 1` 就 `return`，
- *   其余一律下行取 `child[0]` 与 `child[2]->lexeme` —— 而**同一个文件里**
- *   `leafIdName` 就显式查了 `child[0] != NULL` 与 `child[0]->type != NT_VARDEC`。
- *   语法保证下这里不可达，但本层的纪律是"取值前一律先判形状"：判错的后果是
- *   **越界读 / 空指针解引用**（安静地错），而不是本仓库要求的响亮 abort。
- *   故补上与 leafIdName 同形的检查。 */
+ * ★ 取值前先过形状闸（Task 11b 审查补上）：语法保证下这里不可达，但本层的纪律是
+ *   "取值前一律先判形状"：判错的后果是**越界读 / 空指针解引用**（安静地错），
+ *   而不是本仓库要求的响亮 abort。 */
 typedef struct { int dims[8]; int n; } Dims;
 
 static void collectDims(Node *vd, Dims *d) {
@@ -899,36 +1083,39 @@ static void collectDims(Node *vd, Dims *d) {
         shapeError("VarDec", vd);
     if (vd->child[2] == NULL || vd->child[2]->kind != NODE_TOKEN)
         shapeError("VarDec", vd);                                /* LB 与 RB 之间是 INT 终结符 */
-    collectDims(vd->child[0], d);                /* 先到内层 */
     if (d->n >= (int)(sizeof d->dims / sizeof d->dims[0])) {
         fprintf(stderr, "internal error: 数组维数超过 %d（Dims.dims 定长）\n",
                 (int)(sizeof d->dims / sizeof d->dims[0]));
         abort();
     }
-    d->dims[d->n++] = atoi(vd->child[2]->lexeme);/* 再记本层 */
-}
-
-/* 数组总字节数 = 各维之积 × 4（本实验只有 int，宽度 4）。 */
-static int arrayTotalSize(Node *vd) {
-    Dims d; int i, total = 1;
-    d.n = 0;
-    collectDims(vd, &d);
-    for (i = 0; i < d.n; i++) total *= d.dims[i];
-    return total * 4;
+    d->dims[d->n++] = atoi(vd->child[2]->lexeme);/* 先记本层（源码最后一个方括号 = 最内维） */
+    collectDims(vd->child[0], d);                /* 再到更外层 */
 }
 
 /* VarDec 的**声明**部分。
  * 登记名字（`varNameOf`）：登记顺序 = 书写顺序，这正是 IR 里的编号与源码顺序一致的
  * 原因，也是要求书 4.1.6 样例 2 里 `fact` 的形参拿到 v1、main 的 `int m, result;`
  * 拿到 v2/v3 的原因（v 号不是"用到时候"才发的）。
+ * ★ **类型登记**（Task 13）：标量登记 typeBasic(BT_INT)，数组按正确顺序的 dims 构造
+ *   Type。高维下标求步长要用它（语义层的局部作用域在翻译时已弹出）。
  * ★ **数组**（含多维）另发一条 `DEC v <总字节>`（Task 11）：它是虚拟机为该数组分配
  *   地址的依据，漏了它则 `&a` 在真机上查不到、数组整个不可用。非数组不发 DEC。 */
 static InterCodeList *translateVarDec(InterCodeList *tail, Node *vd) {
-    const char *name = varNameOf(leafIdName(vd));
-    if (vd->nchild == 4) {                       /* VarDec : VarDec LB INT RB ⇒ 数组 */
-        InterCode *c = newCode(IR_DEC);
-        c->u.dec.x = opVar(name);
-        c->u.dec.size = arrayTotalSize(vd);
+    const char *srcName = leafIdName(vd);        /* ★ 类型表按**源码名**索引 */
+    const char *irName = varNameOf(srcName);     /* ★ 仍按声明顺序发 v 号（Task 8 约定） */
+    Dims d;
+    d.n = 0;
+    collectDims(vd, &d);
+    if (d.n == 0) {                              /* 标量 */
+        registerVarType(srcName, typeBasic(BT_INT), 0);
+    } else {                                     /* 数组：dims 已是最内层在前 */
+        int i, total = 1;
+        InterCode *c;
+        registerVarType(srcName, typeArrayFromDims(typeBasic(BT_INT), d.dims, d.n), 0);
+        for (i = 0; i < d.n; i++) total *= d.dims[i];
+        c = newCode(IR_DEC);
+        c->u.dec.x = opVar(irName);
+        c->u.dec.size = total * 4;               /* 本实验只有 int，宽度 4 */
         tail = irAppend(tail, c);
     }
     return tail;
@@ -1052,13 +1239,29 @@ InterCodeList *translateCompSt(InterCodeList *tail, Node *c) {
  * 要求书 4.1.6 样例 2 的 `fact(n-1)` 只有一个实参、看不出顺序，**别把这条当"无所谓"**：
  * 一旦这里也逆序，两个错误会互相抵消一部分，症状只在多形参函数上出现。 */
 static InterCodeList *translateVarListAsParams(InterCodeList *tail, Node *vl) {
-    Node *pd;                                    /* ParamDec : Specifier VarDec */
+    Node *pd, *vd;                               /* ParamDec : Specifier VarDec */
+    const char *name;
     InterCode *c;
     if (vl == NULL || (vl->nchild != 1 && vl->nchild != 3)) shapeError("VarList", vl);
     pd = vl->child[0];
     if (pd == NULL || pd->type != NT_PARAMDEC || pd->nchild != 2) shapeError("ParamDec", pd);
+    vd = pd->child[1];
+    name = leafIdName(vd);
+    /* ★ 形参也要登记类型（Task 13）：body 里的 `x[i]` 要靠它求步长。标量按 int；
+     *   数组形参也照实登记维数，但打上 isArrayParam 标记 —— 本任务（Task 13）不处理
+     *   数组下标，arrayElemAddr 见到该标记会**响亮 abort**，绝不静默按局部数组取 &。
+     *   Task 14 才把"形参本身就是基地址"这条接上。 */
+    {
+        Dims d;
+        d.n = 0;
+        collectDims(vd, &d);
+        if (d.n == 0)
+            registerVarType(name, typeBasic(BT_INT), 0);
+        else
+            registerVarType(name, typeArrayFromDims(typeBasic(BT_INT), d.dims, d.n), 1);
+    }
     c = newCode(IR_PARAM);
-    c->u.one.x = opVar(varNameOf(leafIdName(pd->child[1])));
+    c->u.one.x = opVar(varNameOf(name));
     tail = irAppend(tail, c);
     if (vl->nchild == 3) tail = translateVarListAsParams(tail, vl->child[2]);
     return tail;
