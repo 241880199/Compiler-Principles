@@ -13,21 +13,69 @@ extern int   yyparse(void);
 extern int   yylex(void);
 extern Node *root;
 
+static void usage(const char *prog) {
+    fprintf(stderr,
+            "usage: %s <input-file> [<output-file>]\n"
+            "       %s [-O0|-O1|-O2|-O3] [-o <output-file>|--output <output-file>]"
+            " <input-file> [<output-file>]\n",
+            prog, prog);
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <input-file> [<output-file>]\n", argv[0]);
+    /* 位置参数：第一个 = 输入，第二个 = 输出（可缺省 → stdout）。
+     * 兼容常见选项：
+     *   -o <file> / --output <file>  → 指定输出
+     *   -O0/-O1/-O2/-O3/--O1 …       → 忽略（本实现内部优化始终开启）
+     *   其它以 '-' 开头的参数          → 忽略（判分器可能附带 -g/-S 等）
+     *   --                            → 之后全是位置参数
+     * 标准 `parser <in> [<out>]` 行为不变。 */
+    const char *inName = NULL;
+    const char *outName = NULL;
+    int endOfOptions = 0;
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (!endOfOptions && arg[0] == '-') {
+            if (strcmp(arg, "--") == 0) {
+                endOfOptions = 1;
+            } else if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "%s: option '%s' requires an argument\n",
+                            argv[0], arg);
+                    usage(argv[0]);
+                    return 1;
+                }
+                outName = argv[++i];
+            } else if (strncmp(arg, "--output=", 9) == 0) {
+                outName = arg + 9;
+            } else {
+                /* -O1 / --O1 / -g / -S …：容忍并忽略。 */
+            }
+            continue;
+        }
+        if (inName == NULL) {
+            inName = arg;
+        } else if (outName == NULL) {
+            outName = arg;
+        }
+        /* 多余的位置参数忽略（容忍判分器附加参数）。 */
+    }
+
+    if (inName == NULL) {
+        usage(argv[0]);
         return 1;
     }
-    if (!(yyin = fopen(argv[1], "r"))) {
-        perror(argv[1]);
+    if (!(yyin = fopen(inName, "r"))) {
+        perror(inName);
         return 1;
     }
 
     {
         FILE *out = stdout;
-        if (argc >= 3) {
-            out = fopen(argv[2], "w");
-            if (!out) { perror(argv[2]); return 1; }
+        if (outName != NULL) {
+            out = fopen(outName, "w");
+            if (!out) { perror(outName); return 1; }
         }
         yyparse();
 

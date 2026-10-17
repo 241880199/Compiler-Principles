@@ -416,6 +416,40 @@ label-test: parser
 forward-test: parser
 	@bash scripts/run_lab3.sh Test/unit/forward_call.cmm && echo "PASS forward-test"
 
+# ── 驱动命令行兼容（判分器 O1）──────────────────────────────────────────────
+# 判分器以 `./parser -O1 A.cmm out.ir` 调用；驱动必须把 -O 当选项而不是输入文件。
+# 四种调用形式都要工作：-O 在输入前、-o 在输入前、-O 在输入后、标准位置参数。
+# 每种都断言：rc=0、stderr 空、输出 IR 非空、参考机 WRITE 输出与 .exp 一致（7）。
+# 变异自证：把 main.c 恢复成"只认 argv[1]/argv[2]" ⇒ 第 1 种形式 fopen("-O1")
+# 失败、不产 IR ⇒ 本目标红。
+cli-test: parser
+	@bash -c 'set -u; rc=0; \
+	    mkdir -p build; \
+	    tmp=$$(mktemp -d build/cli-test.XXXXXX) || exit 1; \
+	    PY="$$(command -v python3 || command -v python)"; \
+	    if [ -z "$$PY" ]; then echo "FAIL cli-test: 找不到 python3 / python"; rm -rf "$$tmp"; exit 1; fi; \
+	    for mode in a b c d; do \
+	      ir=$$tmp/$$mode.ir; out=$$tmp/$$mode.out; err=$$tmp/$$mode.err; got=$$tmp/$$mode.got; \
+	      case $$mode in \
+	        a) ./parser -O1 Test/unit/forward_call.cmm "$$ir" >"$$out" 2>"$$err" ;; \
+	        b) ./parser -o "$$ir" Test/unit/forward_call.cmm >"$$out" 2>"$$err" ;; \
+	        c) ./parser Test/unit/forward_call.cmm -O1 "$$ir" >"$$out" 2>"$$err" ;; \
+	        d) ./parser Test/unit/forward_call.cmm "$$ir" >"$$out" 2>"$$err" ;; \
+	      esac; \
+	      st=$$?; \
+	      if [ $$st -ne 0 ]; then echo "FAIL cli-test[$$mode]: 退出码 $$st（期望 0）"; rc=1; fi; \
+	      if [ -s "$$err" ]; then echo "FAIL cli-test[$$mode]: stderr 非空"; sed "s/^/      /" "$$err" | head -5; rc=1; fi; \
+	      if [ ! -s "$$ir" ]; then echo "FAIL cli-test[$$mode]: 未产出非空 IR"; rc=1; fi; \
+	      if ! "$$PY" -I scripts/irsim_ref.py --run "$$ir" --in Test/unit/forward_call.in >"$$got" 2>"$$err"; then \
+	        echo "FAIL cli-test[$$mode]: 参考机执行失败"; sed "s/^/      /" "$$err" | head -5; rc=1; \
+	      else \
+	        tail -n +2 "$$got" > "$$got.vals"; mv "$$got.vals" "$$got"; \
+	        if ! diff -u Test/unit/forward_call.exp "$$got"; then echo "FAIL cli-test[$$mode]: 参考机 WRITE 输出与 .exp 不符"; rc=1; fi; \
+	      fi; \
+	    done; \
+	    rm -rf "$$tmp"; \
+	    if [ $$rc -eq 0 ]; then echo "PASS cli-test（4 种参数形式，rc=0/stderr 空/IR 非空/输出 7）"; fi; exit $$rc'
+
 # ── 不同函数中的同名局部变量（A-3 第二项）────────────────────────────────────
 # 语义层按函数作用域放行 `int x` 出现在多个函数里；翻译层每个函数必须清空
 # "源码名 -> vN/Type"的扁平映射（计数器不清），否则 registerVarType 响亮 abort、
@@ -458,7 +492,7 @@ rowarg-test: parser
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
         cond-test prog-test call-test arr-test builtin-test struct-test \
-        array-guard-test label-test forward-test duplicate-locals-test \
+        array-guard-test label-test forward-test cli-test duplicate-locals-test \
         nested-shadow-test manyargs-test rowarg-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
