@@ -1,6 +1,6 @@
 \documentclass[11pt,a4paper]{ctexart}
 
-\usepackage[margin=2.2cm,top=1.9cm,bottom=1.9cm]{geometry}
+\usepackage[margin=2.2cm,top=1.8cm,bottom=1.8cm]{geometry}
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{listings}
@@ -13,22 +13,23 @@
   frame=single,
   framesep=3pt,
   xleftmargin=4pt,
-  aboveskip=6pt,
-  belowskip=6pt,
+  aboveskip=5pt,
+  belowskip=5pt,
   keepspaces=true,
 }
 
-\setlength{\parindent}{2em}    
-\setlength{\parskip}{4pt}
-\linespread{1.18}
-\renewcommand{\arraystretch}{1.25}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{3pt}
+\linespread{1.12}
+\renewcommand{\arraystretch}{1.15}
+\emergencystretch=1.5em
 \newcommand{\code}[1]{\texttt{#1}}
 
 \begin{document}
 
 \begin{center}
-{\large\bfseries 实验一：C{-}{-} 词法分析器与语法分析器}\\[4pt]
-张苏楠\quad 241880199
+{\large\bfseries 实验三：C{-}{-} 中间代码生成}\\[3pt]
+张苏楠\quad 241880199\quad 241880199@smail.nju.edu.cn
 \end{center}
 
 \textbf{工具版本}：gcc \textbf{11.4.0}、GNU flex \textbf{2.6.4}、GNU bison
@@ -38,131 +39,140 @@
 
 {\normalsize
 \setlength{\parindent}{0pt}
-\begin{tabular}{@{}>{\centering\arraybackslash}m{2.6cm}m{13.4cm}@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}m{2.7cm}m{13.3cm}@{}}
 \hline
 \textbf{功能} & \textbf{如何实现，以及为什么这样实现} \\
 \hline
-错误类型 A（词法） & 未定义字符无法逐个枚举，故用 flex 兜底规则 ；非法八/十六进制数、残缺指数浮点数则形式上像合法词素，没法靠正则先排除，只能\textbf{匹配后在 action 内校验}后报错（见选做 1.1）。\\
+前端与语义闸 & 前端仍复用实验一的 Flex + Bison，语义分析是实验二的手写后序遍历。翻译以\textbf{语义错误数为闸}：有错就不产出中间代码。\code{read}/\code{write} 在符号表中登记为预定义函数（0 参 / 1 个 \code{int} 参数，返回 \code{int}），翻译时按函数名特判为 \code{READ}/\code{WRITE}，而不是普通 \code{CALL}。结构体类型的变量或形参按未实现档处理：打印规定提示、输出为空。\\
 \hline
-错误类型 B（语法） & bison无法记行号，故行号由 lexer 侧的 \code{curTokenLine} 跟进；\code{error} 产生式提供恢复出口——bison 默认遇错即停，没有出口就只能报出第一条（见亮点 2）。 \\
+IR 表示 & 指令表是\textbf{带哨兵的双向循环链表}；操作数与指令各有一族构造函数，操作数在构造时复制名字，调用方可在栈缓冲上拼名字。\code{translate.c} \textbf{不直接 printf}，全项目只有 \code{printIR} 一处打印点——输出格式与优化因此互不影响。\\
 \hline
-语法树打印 & 让 \code{YYSTYPE} 直接取 \code{Node *}：词法单元由 lexer 侧构造结点、语法单元在 action 里用 \code{newNode(...)} 组装。二者因此\textbf{同构}，先序打印一份递归代码即可。\\
+表达式与条件 & 表达式翻译以 \code{place} 为\textbf{继承属性}（见亮点 1）；条件翻译以真、假两个目标标号为继承属性，按短路方式生成跳转，\textbf{不回填}。括号不产生任何 IR。\\
 \hline
-行号与$\varepsilon$ 判定 & 都不在 action 里赋值，而是打印时由结构递归推导——行号的定义本就是「子树中第一个词素所在行」，是\textbf{结构的性质}；写进 action 则每个产生式都要重复一遍，漏了也没有东西能发现。且二者本质上等价（见亮点 1）。 \\
+语句与函数 & 按指导书表 3 生成 \code{IF}/\code{WHILE}/\code{RETURN} 等模板；函数依次发 \code{FUNCTION}、\code{PARAM}、函数体。\textbf{实参 \code{ARG} 与形参 \code{PARAM} 顺序相反}：虚拟机中 \code{ARG} 压栈、\code{PARAM} 弹栈，故 \code{ARG} 必须按源码逆序发。\\
 \hline
-选做 1.1\par 八/十六进制 & 八进制规则 \code{0[0-9]+} 写得比十进制规则\textbf{更长}，用 flex 的\textbf{最长匹配}先抢到 \code{09} 这类输入，再在 action 内逐位校验——否则 \code{09} 会被朴素地切成 \code{0} 和 \code{9}，错误顺延到语法阶段才暴露。十六进制的校验模式必须写成 \code{0[xX][0-9a-zA-Z\_]+}：写成 \code{0[xX][a-zA-Z\_]+} 时对 \code{0x3F} 只能匹配 3 个字符，比合法规则\textbf{短}，匹配权被夺走，\code{G} 这类非法字符就永远检测不到。 \\
+数组 & 支持一维、多维数组与数组形参（选做 3.2c/3.2d）。声明处发 \code{DEC}；下标按\textbf{类型链}求各维步长，地址一次线性化（见亮点 2）。数组形参的运行时值本身就是基地址：体内 \code{temp[i]} 用 \code{temp + i*4}，调用点对局部数组发 \code{ARG \&arr}，转传数组形参则发 \code{ARG v}。\\
 \hline
-选做 1.2\par 指数浮点 & 合法规则与残缺规则的长度天然可分（\code{1.05e-4} 匹配 7 字符、残缺规则只能匹配 5 字符），故\textbf{与书写顺序无关}——合法输入下合法规则必然更长，非法输入下合法规则根本不匹配，二者无需相互顾忌。 \\
-\hline
-选做 1.3\par 注释 & 用起始条件 \code{\%x COMMENT} 做状态机：\code{"/*"} 进入、\code{"*/"} 退出，其间字符丢弃——注释可跨任意多行，正则表达不了「未闭合」，只能靠起始条件维持状态。未闭合 \code{/*} 在 \code{<<EOF>>} 处报 type A，\textbf{行号报在其起始行}：报在 EOF 行会指向一段无关代码。 \\
-\hline
-数值输出 & \code{INT} 用 \code{strtol(s, NULL, 0)}——基数 0 让 C 库自动识别 \code{0} 与 \code{0x} 前缀，不必手写进制转换。\code{FLOAT} 用 \code{printf("\%f", atof(s))}，缓冲区取 512 字节：\code{\%f} 会把 \code{0.5e103} 展开成 110 个字符，而 64 字节的缓冲区会\textbf{静默截断成错值}。 \\
+优化 & 在内存 IR 上做\textbf{固定点}迭代的 O1--O9。临时变量单赋值不变量（条件取值模板例外）；O3/O4 以 \code{irTempDefCount == 1} 为门槛，只处理只定义一次的临时变量（见亮点 3）。\\
 \hline
 \end{tabular}}
-
 
 \section*{二、如何编译}
 
 \begin{lstlisting}[language=bash]
+# Ubuntu 22.04 / WSL
 sudo apt-get install -y flex bison gcc make
-make clean && make          # 生成 ./parser（同时生成同内容的 ./cc）
-./parser <文件>              # 或 ./cc <文件>
+make                         # 生成 ./parser（./cc 内容相同）
+./parser in.cmm out.ir       # 写文件
+./parser in.cmm              # 写 stdout
+# 可选：仅必做构建（选做 3.2 只打提示、不产 IR）
+make clean && make LAB3_32=0
 \end{lstlisting}
 
+\code{make} 不依赖 \code{-j}；错误输入按实验一/二口径写 stdout，正常输入不写 stderr。
 
-\section*{三、亮点 1：行号推导与 $\varepsilon$ 判定等价}
+\section*{三、亮点 1：\code{place} 作为继承属性——把结果直接算进目标变量}
 
-语法单元的行号由结构递归推导，而不在每个 action 里赋值：
+最自然的写法是让表达式翻译\textbf{自造临时变量}：每个子表达式把值算进一个新临时变量，
+再由调用方把它拷到真正需要的地方。这样语义上完全正确，但会稳定多出纯拷贝。以
+\code{n = read();} 和 \code{if (n > 0)} 为例，朴素写法先得到：
 
-\begin{lstlisting}[language=C]
-static int nodeLine(const Node *n) {        /* 子树中第一个词法单元的行号 */
-    if (n->kind == NODE_TOKEN) return n->line;     /* 0 表示不含词法单元 */
-    for (int i = 0; i < n->nchild; i++) { int l = nodeLine(n->child[i]);
-        if (l > 0) return l; }
-    return 0;
-}
+\begin{lstlisting}
+READ t1          # read() 先读进临时变量
+v1 := t1         # 再拷进赋值目标
+t2 := #0         # 常量 0 也先物化
+IF v1 > t2 GOTO label1
 \end{lstlisting}
 
-词法单元的行号由 lexer 写入一次，是唯一可信来源；语法单元的行号则是\textbf{结构的
-函数}。这消除了「某个产生式忘了写行号」这一整类 bug。
+本实现把“结果算到哪”作为参数一路传下去：\code{translateExp(tail, e, place)}。
+赋值语句把左值 \code{v1} 本身作为 \code{place} 传给右子表达式，于是 \code{read()} 直接
+写进 \code{v1}；条件翻译遇到简单操作数（\code{EX\_ID} 取变量、\code{EX\_INT} 取立即数）
+时直接把它放进 \code{IF}，不再物化常量。同一段源码只需两条指令：
 
-输出规则是「语法单元产生了 $\varepsilon$ 就不打印」，而
+\begin{lstlisting}
+READ v1
+IF v1 > #0 GOTO label1
+\end{lstlisting}
 
+这不是事后补的窥孔优化，而是\textbf{翻译接口的选择}：\code{place} 是继承属性，
+调用方先决定目的地，子表达式直接往里算。收益有两层：其一，赋值、读入、条件比较这些
+高频路径天然少一条搬运；其二，后续优化 pass 不必再为这些拷贝做消除。要求书 4.1.6
+样例 1 自己给出的“优化后版本”正是 \code{READ v1} / \code{IF v1 > \#0} 这个形态——
+它验证了该接口不是额外技巧，而是要求书期望的常规产物。\code{place} 传 \code{NULL}
+表示“值不被需要”（表达式语句），此时仍照常翻译两侧，因为函数调用等副作用不能丢。
+
+\section*{四、亮点 2：多维下标的地址一次线性化}
+
+链式写法把每个下标的结果物化成“行地址”：先算 \code{\&a[i+1]}，再在行地址上加
+\code{j*4}，最后解引用。每多一维就多一条 \code{ADD}，常量下标还会留下可折叠的中间量；
+更深的问题是，它把“数组的某一维”当成一个可独立求值的对象，而 C-- 中部分下标得到的
+仍是数组，不能当标量用。
+
+本实现按
 \begin{center}
-「产生 $\varepsilon$」$\iff$ 推不出任何词素 $\iff$ \textbf{整棵子树不含词法单元}
-$\iff$ \code{nodeLine} 返回 \code{0}
+\code{\&a + $\sum_d$ (index$_d$ * stride$_d$)}
 \end{center}
+一次算出元素地址：\code{stride$_d$} 由\textbf{类型链}给出——取完第 $d$ 个下标后剩下的
+元素类型的字节数；常量下标直接累加进常数偏移，只有变量下标才发一条 \code{MUL}；
+所有项求和后，\textbf{基地址只加一次}。对
 
-\textbf{二者等效}——因此不需要第二个标志位，$\varepsilon$ 判定是行号推导的
-副产品，而不是另一段代码。若改用 \code{nchild == 0} 判 $\varepsilon$ 就会出错：
-\code{Program -> ExtDefList -> $\varepsilon$} 时 \code{Program} 有\emph{一个}子结点，
-会被误判为非 $\varepsilon$，于是打印出一行无关的 \code{Program (0)}——而行号
-\code{0} 本身其实已经暴露了它推不出任何词素。
+\begin{lstlisting}
+int a[4][6];
+a[i+1][j*2] = 0;
+\end{lstlisting}
 
-\section*{四、亮点 2：错误恢复的同步点设计}
+\code{a} 的类型是 \code{int[4][6]}，取第一个下标后元素类型为 \code{int[6]}，步长
+$6\times4=24$；取第二个下标后为 \code{int}，步长 4。生成：
 
-错误恢复的目标是报出文件中的\textbf{全部}错误，而 Bison 默认遇错即停，故须用
-\code{error} 产生式给出恢复出口。出口的选择原则是\textbf{弹栈越少、丢弃越少越好}
-——恢复之所以会漏报，来源正是「丢弃」。最终采用四个：\code{Stmt : error SEMI}（语句层）、
-\code{ExtDef : error SEMI}（顶层，避免弹空栈中止），以及\textbf{不带同步符的两条}
-——\code{CompSt : error}（块层）与\code{Def : error}（定义层）。
+\begin{lstlisting}
+t1 := i + #1
+t2 := t1 * #24
+t3 := j * #2
+t4 := t3 * #4
+t5 := t2 + t4
+addr := &a + t5
+*addr := #0
+\end{lstlisting}
 
-\subsection*{4.1 「带不带同步符」比「放哪一层」更重要}
+这里没有“行地址”这个中间对象，每个变量下标恰好一条 \code{MUL}，基地址只在最后加一次；
+若某个下标是常量，连它的 \code{MUL} 都不发（例如 \code{a[0][i]} 只剩
+\code{t := i * \#4} 与 \code{addr := \&a + t}）。
 
-\code{error} 带同步符时，Bison 会先\textbf{丢弃}词法单元直到同步符出现才归约；而
-\textbf{裸 \code{error} 移进后立即归约、不丢弃任何前瞻}。这一点直接决定能报出多少错误：
+这一步有一个容易漏掉的前提：\textbf{翻译层必须自己保存“源码名 → 类型”表}。语义分析
+结束时局部作用域已经弹出，翻译阶段再查符号表拿不到局部数组的类型，也就求不出步长。
+数组形参还要在这个表里多记一个标记：形参的运行时值\textbf{已经是基地址}，体内下标必须
+用 \code{opVar}（\code{temp + i*4}），不能再取 \code{\&}；调用点则相反，局部数组传
+\code{ARG \&arr}，转传数组形参传 \code{ARG v}。两处不对称只要写反一处，就会得到
+“地址的地址”，运行结果立即出错。
 
-{\normalsize
-\setlength{\parindent}{0pt}
-\begin{tabular}{@{}c c >{\centering\arraybackslash}m{4.0cm} >{\centering\arraybackslash}m{4.0cm}@{}}
-\hline
-写法 & 冲突 state & 场景1\par 块内定义缺分号、块继续 & 场景2\par 缺分号紧接 \code{\}}、后有兄弟 \\
-\hline
-不加 & 1 & \textbf{只报 1 条}（少报） & 报 2 条 \\
-\hline
-\code{| error SEMI} & 3 & 报 2 条 & \textbf{只报 1 条}（少报） \\
-\hline
-\code{| error RC} & 3 & \textbf{只报 1 条}（少报） & 报 2 条 \\
-\hline
-\textbf{\code{| error}（裸）$\to$ 采纳} & \textbf{3} & \textbf{报 2 条} & \textbf{报 2 条} \\
-\hline
-\end{tabular}}
+\section*{五、亮点 3：独立的 IR 与优化；静态条数 $\neq$ 动态条数}
 
-机理：场景2里整份文件\textbf{一个 \code{;} 都没有}，\code{error SEMI} 只能一路
-丢到 EOF，于是只报第 1 条；\code{error RC} 则把 \code{\}} 本身当同步符吃掉，块内
-后续内容整段消失。裸 \code{error} 不丢任何东西，\code{\}} 仍在流里、外层结构照常
-走完。\textbf{这是纯收益}：裸 \code{error} 引入的 2 个冲突与 \code{error SEMI}
-完全相同——冲突由 \code{error} 符号本身引起（\code{DefList} 可空），与后面
-跟不跟同步符无关。
+如果边遍历语法树边打印，IR 一产生就写进了输出流，既无法整体优化，也无法统一改输出
+格式。本实现先把 IR 建在内存的带哨兵双向循环链表里，再跑优化 pass，最后从唯一的
+\code{printIR} 输出。优化器采用\textbf{固定点}框架：反复执行各子 pass，直到一整轮
+不再有任何改动（设 20 轮上限，触发即告警）；优化前后都断言临时变量单赋值，防止
+某个 pass 把错误放大。
 
-\subsection*{4.2 一条被否决的规则：\code{Exp : error RB}}
+九条规则是：O1 常量折叠、O2 代数化简、O3 立即数内联、O4 结果直达、O5 冗余拷贝消除、
+O6 无引用标号删除、O7 删除紧邻目标标号的 \code{GOTO}、O8 \code{GOTO} 链折叠、
+O9 条件反转 + fall-through。O3/O4 只对 \code{irTempDefCount == 1} 的临时变量生效：
+条件取值模板会两次定义同一个临时变量，若把它当普通常量传播，语义就错了。
 
-原设计还有一条 \code{Exp : error RB}，推演看着很对：\code{a[5,3] = 1.5;} 在下标处
-出错时就地恢复、正好在 \code{]} 同步。但加上它之后反而报出 3 条错误（行 5、
-行 5、行 6），违反「同一行不出现多个错误」这条输出约定。用 \code{bison -t} 的调试
-轨迹查明：\code{Exp LB . Exp RB} 状态的\textbf{闭包里就含}
-\code{Exp -> . error RB}，所以 Bison 在下标内部就找到出口、\textbf{停止弹
-栈}；而 \code{error} 的同步符 \code{RB} \textbf{恰好就是外层 \code{[} 正在等待的
-那个 \code{]}}，被内层吃掉后外层永远等不到闭合。
+关键在于：\textbf{静态指令条数不等于动态执行条数}。虚拟机的跳转把 IP 写成目标标号
+自身的下标，因此被跳转命中的 \code{LABEL}/\code{FUNCTION} 行会被跨过、不计数；只有
+控制流\textbf{落入}的标号行才计数。这条计数语义改变了“删一条跳转就省一条指令”的直觉：
 
-所以设计 \code{error} 同步点时，不能只看「error 之后想跟什么」，还要看\textbf{这个
-出口是否已在当前状态的闭包里}——在的话 Bison 就地停下，不会按预期往外弹栈。
-块层出口也由带同步符的 \code{CompSt : error RC} 改成了裸 \code{error}：带同步符时它会
-先把 \code{\}} 本身当同步符吃掉，块内其后的定义整段消失——实测同一份文件因此少报错
-误。改用裸 \code{error} 后不丢弃任何前瞻，冲突数仍是 3。
+\begin{itemize}
+\item O7 删掉紧邻目标标号的 \code{GOTO} 后，控制流改为落入下一条 \code{LABEL}：
+      省一条 \code{GOTO}，却多计一条 \code{LABEL}，\textbf{动态净收益为 0}，只降低静态行数；
+\item O6 删除无引用标号、O8 折叠 \code{GOTO} 链，在执行到相应路径时确实省动态条数；
+\item O9 是唯一能在\textbf{假分支}上省一条的规则：它删掉假分支末尾那条 \code{GOTO}
+      （真分支路径的执行条数不变）。
+\end{itemize}
 
-\section*{五、亮点 3：为什么必须声明 \code{\%left LB DOT}}
-
-文法里显式声明了 \code{\%left LB DOT} 为最高优先级，理由是一条容易被忽略的规则：
-栈上 \code{Exp PLUS Exp .} 遇前瞻 \code{LB} 时，归约得 \code{(a+b)[1]}、移进得
-\code{a+(b[1])}，\textbf{两棵树都合法}——这是真实的 shift/reduce 冲突。而 Bison
-只在\textbf{规则与前瞻 token 都声明了优先级}时才消解，不声明则这类冲突根本
-不进入优先级判定：只声明其余运算符时，\code{Exp} 的 100 处冲突只能消掉 80 处，
-剩下的 20 处正是 \code{LB}/\code{DOT} 引起的。
-
-把这一行删掉，程序对外的行为不会变——显式声明优先级与 Bison 默认移进恰好得出同一张
-LR 动作表；变的只有冲突数，从 3 处涨到 13 处。这 3 处的归属是：两处由 \code{DefList}
-可空引起，即「移进 \code{error}」与「按 \code{DefList} -> $\varepsilon$ 归约」之争；
-一处是悬空 else。
+所以判断一条优化是否有效，看的是\textbf{它在真实执行路径上是否被执行}，而不是它让
+文本短了几行。在覆盖必做与选做的语料上实测，优化后动态执行条数合计从
+\textbf{3350 降到 2844，降幅 15.1\%}；要求书样例 1 的三种输入分别为 8/8/6 条，
+官方“优化后版本”为 10/9/9 条，均不更差。
 
 \end{document}
