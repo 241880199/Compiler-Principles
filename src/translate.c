@@ -530,7 +530,8 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
  *   括号不改变数组身份，故 `f((op))` 与 `f(op)` 同形。`argList` 是 `Operand[]`，
  *   `opAddr` 直接放得下 —— 这就是 Task 11 把它从名字数组改成操作数数组的用处。
  *   非数组实参照旧走下面的标量路径（ID → `opVar`，其余形状 → 物化）。
- *   结构体实参属选做 3.1，登记表若真给出 `TY_STRUCTURE` 就当场响亮失败。
+ *   结构体实参属选做 3.1，由语义闸（Task 15）在翻译前拦下；且 `registerDeclType`
+ *   只登记 int 标量/数组，故这里没有（也不需要）结构体分支。
  *
  * `argList` 是调用方给的定长数组（容量 MAX_CALL_ARGS），元素是**操作数**（原先存名字）；
  * 超出即**响亮 abort** —— 与 varMap 的容量守卫同一纪律：定长表越界会**静默踩内存**，
@@ -553,12 +554,6 @@ static InterCodeList *translateArgs(InterCodeList *tail, Node *a,
         /* 局部数组传地址（&arr）；数组形参的运行时值已是基地址（不再加 &）。 */
         const char *vn = varNameOf(id->child[0]->lexeme);
         t = ent->isArrayParam ? opVar(vn) : opAddr(vn);
-    }
-    else if (ent != NULL && ent->type != NULL && ent->type->kind == TY_STRUCTURE) {
-        /* 结构体参数属选做 3.1，本实验不实现；语义闸（Task 15）应已拦下。 */
-        fprintf(stderr, "internal error: 结构体作函数实参不支持（选做 3.1）"
-                        " at line %d\n", nodeLine(arg));
-        abort();
     }
     else if (classifyExp(arg) == EX_INT) t = opConst(atoi(arg->child[0]->lexeme));
     else if (classifyExp(arg) == EX_ID)  t = opVar(varNameOf(arg->child[0]->lexeme));

@@ -1,0 +1,18 @@
+int bump(int a[2], int i)
+{
+  a[i] = a[i] + 10;
+  return a[i];
+}
+
+int main()
+{
+  int op[2];
+  int r;
+  op[0] = 1;
+  op[1] = 2;
+  r = bump(op, 1);
+  write(r);
+  write(op[0]);
+  write(op[1]);
+  return 0;
+}
