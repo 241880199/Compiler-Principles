@@ -51,7 +51,7 @@ IR 表示 & 指令表是\textbf{带哨兵的双向循环链表}；操作数与�
 \hline
 语句与函数 & 按指导书表 3 生成 \code{IF}/\code{WHILE}/\code{RETURN} 等模板；函数依次发 \code{FUNCTION}、\code{PARAM}、函数体。\textbf{实参 \code{ARG} 与形参 \code{PARAM} 顺序相反}：虚拟机中 \code{ARG} 压栈、\code{PARAM} 弹栈，故 \code{ARG} 必须按源码逆序发。\\
 \hline
-数组 & 支持一维、多维数组与数组形参（选做 3.2c/3.2d）。声明处发 \code{DEC}；下标按\textbf{类型链}求各维步长，地址一次线性化（见亮点 2）。数组形参的运行时值本身就是基地址：体内 \code{temp[i]} 用 \code{temp + i*4}，调用点对局部数组发 \code{ARG \&arr}，转传数组形参则发 \code{ARG v}。\\
+数组 & 支持一维、多维数组与数组形参（选做 3.2c/3.2d）；\textbf{数组整体赋值与初始化}（\code{a = b;}、\code{int c[2] = b;}）按\textbf{逐元素拷贝循环}翻译。声明处发 \code{DEC}；下标按\textbf{类型链}求各维步长，地址一次线性化（见亮点 2）。数组形参的运行时值本身就是基地址：体内 \code{temp[i]} 用 \code{temp + i*4}，调用点对局部数组发 \code{ARG \&arr}，转传数组形参则发 \code{ARG v}。\\
 \hline
 优化 & 在内存 IR 上做\textbf{固定点}迭代的 O1--O9。临时变量单赋值不变量（条件取值模板例外）；O3/O4 以 \code{irTempDefCount == 1} 为门槛，只处理只定义一次的临时变量（见亮点 3）。\\
 \hline
