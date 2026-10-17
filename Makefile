@@ -409,6 +409,13 @@ label-test: parser
 	    rm -f $$out $$err $$got $$ir; \
 	    if [ $$rc -eq 0 ]; then echo "PASS label-test"; fi; exit $$rc'
 
+# ── 前向函数调用（实验三 4.1.1 未要求"先定义后使用"）────────────────────────
+# main 写在前面、add 定义在后面；语义层必须放行，产出非空 IR，且参考机算出 7。
+# 变异自证：删掉 analyzeCall 里的 isForwardFunc 分支 ⇒ parser 报 Error type 2、
+# IR 为空 ⇒ run_lab3.sh 以"parser 未产出 IR"判红。
+forward-test: parser
+	@bash scripts/run_lab3.sh Test/unit/forward_call.cmm && echo "PASS forward-test"
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -422,7 +429,7 @@ label-test: parser
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
         ir-abort-test opt-test opt-abort-test opt-off-test expkind-test translate-test \
         cond-test prog-test call-test arr-test builtin-test struct-test \
-        array-guard-test label-test
+        array-guard-test label-test forward-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

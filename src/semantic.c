@@ -16,6 +16,62 @@ static int  anonCounter = 0;        /* 匿名结构体的隐藏名计数 */
  * 结构体**域**的类型不置位 —— `struct A { struct B b; };` 没有变量/形参。 */
 static int  hasStructType = 0;
 
+/* ── 前向函数调用（实验三 4.1.1 的假设）────────────────────
+ * 实验二的语义层是单遍的，按 C 旧式习惯要求"先定义后使用"（设计文档决策 10）。
+ * 但实验三 4.1.1 的假设里**没有**这条限制，必做程序很可能按现代 C 的习惯把
+ * `main` 写在前面、辅助函数写在后面。若沿用实验二的选择，这类程序会在调用处
+ * 报 `Error type 2`，翻译被语义错误闸跳过，输出 IR 为 0 字节。
+ *
+ * 解法：正式分析前先对整个 `ExtDefList` 做一次**只收顶层函数名**的预扫。
+ * `analyzeCall` 在符号表里查不到名字时，若该名字在预扫表里，就按"定义在后面"
+ * 处理 —— 返回 int、不报错误 2。符号表本身不动：定义真正出现时仍走原有
+ * `analyzeFunDec`（两次定义仍报错误 4），从未定义的名字仍报错误 2。
+ * 变量仍是严格的单遍规则（预扫完全不碰变量）。
+ *
+ * **取舍**：预扫只收名字，不收签名 —— 前向调用不检查实参个数/类型。
+ * 实验三假设输入是无语义错误的程序；若以后要严格，需要把签名也预扫进来。 */
+#define FORWARD_FUNC_MAX 1024
+static const char *forwardFuncs[FORWARD_FUNC_MAX];
+static int forwardFuncN;
+
+static void addForwardFunc(const char *name) {
+    int i;
+    for (i = 0; i < forwardFuncN; i++)
+        if (strcmp(forwardFuncs[i], name) == 0) return;   /* 重复定义留给错误 4 */
+    if (forwardFuncN >= FORWARD_FUNC_MAX) {
+        fprintf(stderr, "internal error: more than %d top-level functions\n",
+                FORWARD_FUNC_MAX);
+        abort();
+    }
+    forwardFuncs[forwardFuncN++] = name;
+}
+
+static int isForwardFunc(const char *name) {
+    int i;
+    for (i = 0; i < forwardFuncN; i++)
+        if (strcmp(forwardFuncs[i], name) == 0) return 1;
+    return 0;
+}
+
+/* ExtDefList 右递归：child[0] 是 ExtDef，child[1] 是余下列表。
+ * 只收集 `Specifier FunDec …`（nchild==3 且 child[1]->type == NT_FUNDEC）的
+ * FunDec.child[0]->lexeme。不要碰任何变量/结构体/错误码。
+ * 函数声明形态（ED_PROTO）会被语义层逐条拒绝，故这里收到的名字就是
+ * "文件里出现过的顶层函数名"；真正的定义检查与登记仍在主遍里做。 */
+static void collectForwardFuncs(const Node *l) {
+    const Node *ed;
+    const Node *fd;
+    if (!l || l->nchild < 2) return;          /* ε（nchild == 0） */
+    ed = l->child[0];
+    if (ed && ed->nchild == 3 && ed->child[1] &&
+        ed->child[1]->type == NT_FUNDEC) {
+        fd = ed->child[1];
+        if (fd->nchild >= 1 && fd->child[0] && fd->child[0]->lexeme)
+            addForwardFunc(fd->child[0]->lexeme);
+    }
+    collectForwardFuncs(l->child[1]);
+}
+
 /* ── 报错：统一在这里累加条数 ────────────────────────────── */
 static void semErr(int code, int line, const char *fmt, ...) {
     char buf[512];
@@ -395,6 +451,12 @@ static Type analyzeCall(const Node *n, int hasArgs) {
      * 名字不存在就报 2 并短路，**根本不去碰实参**（这同时也省掉了那次分配）。
      * 错误 9 的路径不受影响 —— 它是最后一个检查，两者都用得着实参表。 */
     if (!e) {
+        /* 定义在文件后面：实验三 4.1.1 未要求"先定义后使用"，按前向调用放行，
+         * 返回值按 int（实验三没有 float 函数）。**不插入符号表** —— 定义真正
+         * 出现时仍走 analyzeFunDec，重复定义仍报错误 4；从未定义的名字仍报错误 2。
+         * 这里也**不检查实参**：预扫只收名字、没有签名（见 collectForwardFuncs 上方）。 */
+        if (isForwardFunc(name))
+            return typeBasic(BT_INT);
         semErr(2, nodeLine(idNode), "Undefined function \"%s\"", name);
         return typeUnknown();
     }
@@ -935,9 +997,11 @@ int semanticAnalyze(Node *root) {
     curFuncReturn = NULL;
     anonCounter = 0;
     hasStructType = 0;
+    forwardFuncN = 0;
     symInit();
     registerBuiltins();
     if (!root) return 0;
+    collectForwardFuncs(root->child[0]);     /* 预扫顶层函数名（不改变量单遍规则） */
     analyzeExtDefList(root->child[0]);       /* Program : ExtDefList */
     /* 没有"文件末尾再扫一遍全局表"这一步 —— 那是错误 18（函数声明了但从未定义）用的，
      * 而本版本不做选做 2.1，没有声明这一形态。 */
