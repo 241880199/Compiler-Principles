@@ -299,6 +299,13 @@ arr-test: Test/unit/test_translate_prog
 	    rm -f $$out $$err $$got $$ir; \
 	    if [ $$rc -eq 0 ]; then echo "PASS arr-test"; fi; exit $$rc'
 
+# ── read/write 内建 + 语义闸（Task 12b）──────────────────────────────────────
+# 与上面两类的区别：这里测的是 **main.c 的端到端行为**（是否打印假错误、语义错误时
+# 是否还翻译），不是翻译产物本身。故跑的是真 `./parser`（带 main），而不是
+# test_translate_prog 那条共享二进制。四条断言的说明见 Test/unit/test_builtins.sh。
+builtin-test: parser
+	@bash Test/unit/test_builtins.sh
+
 # 注：这里**没有** `test` 目标。评分流程是 `make` + `./parser <文件>`，不需要它；
 # 而让它挂着一个开发期脚本（scripts/run_tests.sh）会把"构建可用性"和"开发期工具
 # 是否随提交一起打包"绑在一起 —— 打包时漏掉 scripts/ 就会让 `make test` 直接坏掉。
@@ -310,7 +317,8 @@ arr-test: Test/unit/test_translate_prog
 #     bash scripts/run_tests.sh      # 需先 make；脚本自己会检查 ./parser 并构建回归驱动
 
 .PHONY: all clean unit-test lexer-test type-test nodetype-test symtab-test report-test ir-test \
-        ir-abort-test expkind-test translate-test cond-test prog-test call-test arr-test
+        ir-abort-test expkind-test translate-test cond-test prog-test call-test arr-test \
+        builtin-test
 clean:
 	rm -f parser cc *.o src/*.o lex.yy.c syntax.tab.c syntax.tab.h syntax.output \
 	      Test/unit/test_tree Test/unit/test_lexer Test/unit/test_type \

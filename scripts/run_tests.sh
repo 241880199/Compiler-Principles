@@ -95,7 +95,8 @@ check_pairs() {
 }
 
 # 实验一的用例（Test/sample、Test/err）期望的是**语法树或 A/B 错误**，由回归驱动跑；
-# 实验二的用例（Test/lab2）期望的是**语义错误**，由 ./parser 跑。
+# 实验二的用例（Test/lab2）期望的是**语义错误**，由 ./scripts/parser_stdout_only.sh
+# （语义分析专用）跑。
 for cmm in Test/sample/*.cmm Test/err/*.cmm; do
     [ -e "$cmm" ] || continue
     runner=./Test/regress/driver

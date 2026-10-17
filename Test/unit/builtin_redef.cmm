@@ -1,0 +1,5 @@
+int read() { return 0; }
+int main()
+{ return 0; }
+
+int write(int x) { return 0; }

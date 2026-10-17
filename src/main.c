@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "tree.h"
 #include "report.h"
 #include "semantic.h"
@@ -35,15 +36,19 @@ int main(int argc, char **argv) {
         if (hasError()) {
             while (yylex() != 0) { }
         } else {
-            /* 语义错误由 semanticAnalyze 打到 stdout（实验二口径）。这里**不看**
-             * 它的返回值：语义层尚未把 read/write 登记为内建，合法 lab3 程序也会
-             * 被报错误 2；翻译层另按内建处理它们（要求书 2.1.4）。 */
-            semanticAnalyze(root);
+            /* 语义错误由 semanticAnalyze 打到 stdout（实验二口径）。**翻译以语义错误
+             * 数为闸**：有错就不翻译 —— 语义非法的输入（lab2 的 13 个语义错误用例、
+             * 畸形内建调用等）不得再走进翻译层，否则翻译层的响亮失败（如
+             * MAX_CALL_ARGS 的 abort）会盖掉语义层的诊断。 */
+            int semErrs = semanticAnalyze(root);
             /* CMM_SEMANTIC_ONLY：只跑实验二口径的语义检查，不做翻译。
              * 由 scripts/parser_stdout_only.sh 设置，仅供 scripts/run_tests.sh 的
              * lab2 回归（其中 lab2_wideargs_ok 有 60 个实参，超过翻译层
-             * MAX_CALL_ARGS=16 的**故意**响亮失败上限）。不影响对外契约。 */
-            if (!getenv("CMM_SEMANTIC_ONLY")) {
+             * MAX_CALL_ARGS=16 的**故意**响亮失败上限）。不影响对外契约。
+             * 严格只认 "1"：置成 "0" 或空串都**不得**关闭翻译。 */
+            const char *semOnly = getenv("CMM_SEMANTIC_ONLY");
+            int semanticOnly = semOnly && strcmp(semOnly, "1") == 0;
+            if (semErrs == 0 && !semanticOnly) {
                 InterCodeList *ir = translateProgram(root);
                 optimizeIR(ir);      /* Task 6 落的 no-op；Task 16 起才有真实现 */
                 printIR(out, ir);

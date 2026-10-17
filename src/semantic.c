@@ -886,11 +886,39 @@ static void analyzeExtDefList(const Node *n) {   /* ExtDefList : ExtDef ExtDefLi
     analyzeExtDefList(n->child[1]);
 }
 
+/* ── 内建函数 read / write（要求书 2.1.4）────────────────────
+ *
+ * 要求书原文（`build/spec.txt` 第 152–160 行）：
+ *   "在符号表中预先添加 read 和 write 这两个预定义的函数。其中 read 函数没有任何
+ *    参数，返回值为 int 型；write 函数包含一个 int 类型的参数，返回值也为 int 型
+ *    （固定返回 0）。"
+ *
+ * **为什么需要用户裁定才能动这里**：原计划把 `semantic.c` 隔离在 Task 12b 之外
+ * （只允许 Task 15 的结构体最小改动）。但不登记这两个名字，**每个合法 lab3 程序**
+ * 都会向 stdout 打印假的 `Error type 2: Undefined function`，而且语义非法的输入会
+ * 一直走到翻译层 abort。用户于 2026-10-17 明确授权本任务修改本文件。
+ *
+ * 行号用 0：这两个名字不来自源文件。若用户在源文件里重定义它们，错误 4 的行号取
+ * **用户定义处**的 `nodeLine`（见 analyzeFunDec），与这里的 `declLine` 无关。
+ * symInit() 之后表为空，故两次 symEnter 都不会冲突；`code` 只是接口要求，忽略。
+ * `symEnter` 已把 params/nparams 置空，函数体里按需补 params。 */
+static void registerBuiltins(void) {
+    int code = 0;
+    SymEntry *e = symEnter("read", SYM_FUNC, typeBasic(BT_INT), /*line=*/0, &code);
+    e->params = NULL;
+    e->nparams = 0;
+    e = symEnter("write", SYM_FUNC, typeBasic(BT_INT), /*line=*/0, &code);
+    e->params = xmalloc(sizeof(Type));
+    e->params[0] = typeBasic(BT_INT);
+    e->nparams = 1;
+}
+
 int semanticAnalyze(Node *root) {
     errorCount = 0;
     curFuncReturn = NULL;
     anonCounter = 0;
     symInit();
+    registerBuiltins();
     if (!root) return 0;
     analyzeExtDefList(root->child[0]);       /* Program : ExtDefList */
     /* 没有"文件末尾再扫一遍全局表"这一步 —— 那是错误 18（函数声明了但从未定义）用的，
