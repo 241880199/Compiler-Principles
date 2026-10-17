@@ -144,9 +144,12 @@ static int varMapN = 0;
  * `translateResetNames` 一并清空。名字用 xstrdup 复制（AST 的 lexeme 虽然活到进程结束，
  * 但沿 varMap 的既有做法走，不依赖调用方保活）。
  *
- * `isArrayParam` 只为**响亮失败**服务：数组形参在真机上收到的本身就是基地址，
- * 不能像局部数组那样再取 `&`（见 P5，Task 14）。Task 13 不处理数组形参，故
- * `arrayElemAddr` 一旦发现基名是数组形参就当场 abort —— 绝不静默按局部数组算。
+ * `isArrayParam` 承载"形参本身即基地址"这条契约（Task 14，见 P5）：数组形参在
+ * 真机上收到的**就是**基地址，因此
+ *   · 体内下标：`arrayElemAddr` 以 `opVar(名字)` 作基地址，**不再取 `&`**；
+ *   · 再作实参传递：`translateArgs` 直接 `opVar(名字)`，也不加 `&`。
+ * 局部数组则相反：两处都用 `opAddr(名字)`（渲染成 `&vN`）。两条路径的区分点
+ * **只此一处**（本标记），绝不靠调用点另猜。
  *
  * 表定长，写入前必须查容量（同 varMap 的纪律：溢出是**静默越界写**，不是响亮失败）。
  * 重复登记同样响亮 abort：假设 4 下不可能发生；真发生了说明翻译层把同一个声明翻了
@@ -514,9 +517,20 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
  *   ⚠ 顺序仍是**逆序**（`argList[0]` 是最靠右的那个实参）—— 别把这次改动与顺序搞混。
  *   ⚠ 直接入列的变量**不再是"求值时刻的快照"**：真机 `ARG x` 是 `get_value(x)`，
  *     即 ARG 执行时**现读**。物化写法读的是各项求值那一刻的值。本语言里这个差别
- *     **观察不到** —— 假设 4 无全局变量、本任务也没有数组/引用形参（Task 14），
- *     故没有任何实参表达式能改到调用方看得见的变量；C 对 `f(x, g())` 的求值次序
- *     本身也是未指定的。故按要求书的形态直接入列。
+ *     **观察不到** —— 假设 4 无全局变量；数组实参传的是**地址**（局部数组 `ARG &v`
+ *     是常量地址；数组形参 `ARG b` 的 b 是形参地址，函数体内没有任何语句能改 b
+ *     本身），故没有任何实参表达式能改到调用方看得见的标量变量；C 对 `f(x, g())`
+ *     的求值次序本身也是未指定的。故按要求书的形态直接入列。
+ *
+ * ★ **数组实参（Task 14，选做 3.2c）**：剥掉括号后是 `EX_ID`、且在 varTypes 里登记为
+ *   `TY_ARRAY` 时，入列的操作数是**地址**而不是值：
+ *     · 局部数组   → `opAddr(名字)`，渲染 `ARG &vN`；
+ *     · 数组形参   → `opVar(名字)`，形参的运行时值**已经就是基地址**，**绝不再加 `&`**
+ *                    （否则会传出"地址的地址"，体内按 `v + i*4` 取到的是垃圾）。
+ *   括号不改变数组身份，故 `f((op))` 与 `f(op)` 同形。`argList` 是 `Operand[]`，
+ *   `opAddr` 直接放得下 —— 这就是 Task 11 把它从名字数组改成操作数数组的用处。
+ *   非数组实参照旧走下面的标量路径（ID → `opVar`，其余形状 → 物化）。
+ *   结构体实参属选做 3.1，登记表若真给出 `TY_STRUCTURE` 就当场响亮失败。
  *
  * `argList` 是调用方给的定长数组（容量 MAX_CALL_ARGS），元素是**操作数**（原先存名字）；
  * 超出即**响亮 abort** —— 与 varMap 的容量守卫同一纪律：定长表越界会**静默踩内存**，
@@ -524,11 +538,29 @@ static InterCodeList *translateNotAsValue(InterCodeList *tail, Node *e, Operand 
 static InterCodeList *translateArgs(InterCodeList *tail, Node *a,
                                     Operand *argList, int *n) {
     Operand t;
-    Node *arg;
+    Node *arg, *id;
+    VarTypeEntry *ent;
     if (a == NULL || (a->nchild != 1 && a->nchild != 3)) shapeError("Args", a);
     /* 本项（源码里靠左）：认得的形状直接入列，不认得才物化到临时变量。 */
     arg = a->child[0];
-    if      (classifyExp(arg) == EX_INT) t = opConst(atoi(arg->child[0]->lexeme));
+
+    /* ★ 数组实参（Task 14）：括号不改变数组身份，先剥到 ID 再查类型表。 */
+    id = arg;
+    while (id != NULL && classifyExp(id) == EX_PAREN) id = id->child[1];
+    ent = (id != NULL && classifyExp(id) == EX_ID)
+              ? lookupVarType(id->child[0]->lexeme) : NULL;
+    if (ent != NULL && ent->type != NULL && ent->type->kind == TY_ARRAY) {
+        /* 局部数组传地址（&arr）；数组形参的运行时值已是基地址（不再加 &）。 */
+        const char *vn = varNameOf(id->child[0]->lexeme);
+        t = ent->isArrayParam ? opVar(vn) : opAddr(vn);
+    }
+    else if (ent != NULL && ent->type != NULL && ent->type->kind == TY_STRUCTURE) {
+        /* 结构体参数属选做 3.1，本实验不实现；语义闸（Task 15）应已拦下。 */
+        fprintf(stderr, "internal error: 结构体作函数实参不支持（选做 3.1）"
+                        " at line %d\n", nodeLine(arg));
+        abort();
+    }
+    else if (classifyExp(arg) == EX_INT) t = opConst(atoi(arg->child[0]->lexeme));
     else if (classifyExp(arg) == EX_ID)  t = opVar(varNameOf(arg->child[0]->lexeme));
     else { t = opVar(newTempName());
            tail = translateExp(tail, arg, t); }
@@ -659,8 +691,13 @@ static InterCodeList *translateCallN(InterCodeList *tail, Node *e, Operand place
  * 失败形态（都与本文件其余位置一致：响亮 abort，绝不猜一种布局）：
  *   · 基础表达式不是 ID（`f()[i]` 等）—— 不在本任务范围；
  *   · 基础名没有类型登记 / 登记的不是数组 —— 语义闸（错误 10）应已拦下；
- *   · 基础名是**数组形参** —— 形参收到的本身就是基地址，不能取 `&`，属 Task 14；
- *   · 下标层数超过数组维数 / 走完下标仍不是标量 —— 语义闸应已拦下。
+ *   · 下标层数超过数组维数 / 走完下标仍不是标量（**部分下标得到数组**）——
+ *     后者语义上合法（`r[0]` 是行），但本实验不支持把数组值 / 部分下标当标量用，
+ *     语义闸也不拦它（它只在"当值/当实参"的上下文里非法），故这里响亮失败。
+ *
+ * ★ **数组形参的基地址（Task 14）**：形参在运行时的值**就是**基地址，故
+ *   `base = opVar(名字)`；局部数组才 `base = opAddr(名字)`（渲染 `&a`）。
+ *   两者的区别只由 varTypes 的 `isArrayParam` 标记决定（见该表处说明）。
  *
  * `&a` 是 OP_ADDR（渲染成 `&a`），只用在"自己就带 &"的位置（ARITH 的操作数），
  * **不是**喂给 IR_ADDR 的那个（见 ir.h 顶部的"两个 & 的分工"）。 */
@@ -729,7 +766,7 @@ static Operand arrayElemAddr(InterCodeList **p, Node *e) {
 
     if (b == NULL || classifyExp(b) != EX_ID) {
         fprintf(stderr, "internal error: 数组下标的基础表达式只能是数组名"
-                        "（其它基础表达式不在本任务；数组形参属 Task 14）at line %d\n",
+                        "（其它基础表达式不在本任务）at line %d\n",
                 nodeLine(e));
         abort();
     }
@@ -738,12 +775,6 @@ static Operand arrayElemAddr(InterCodeList **p, Node *e) {
         fprintf(stderr, "internal error: 变量 \"%s\" 没有类型登记"
                         "（语义闸应已拦下；见 varTypes 的说明）at line %d\n",
                 b->child[0]->lexeme, nodeLine(e));
-        abort();
-    }
-    if (ent->isArrayParam) {
-        fprintf(stderr, "internal error: 数组形参 \"%s\" 的下标属 Task 14"
-                        "（形参收到的本身就是基地址，不能再取 &）at line %d\n",
-                ent->name, nodeLine(e));
         abort();
     }
     if (ent->type == NULL || ent->type->kind != TY_ARRAY) {
@@ -778,12 +809,16 @@ static Operand arrayElemAddr(InterCodeList **p, Node *e) {
         }
     }
     if (cur->kind != TY_BASIC) {
-        fprintf(stderr, "internal error: 下标没有取到标量元素（数组值 / 部分下标不在本任务）"
-                        " at line %d\n", nodeLine(e));
+        /* 例：2 维局部数组 `r` 上的 `f(r[0])` —— `r[0]` 仍是数组。数组作**整体值**
+         * （含部分下标）不在本实验范围；绝不能把它当标量算出个"像那么回事"的地址。 */
+        fprintf(stderr, "internal error: 下标没有取到标量元素（部分下标得到数组）——"
+                        "数组/部分下标不能当标量值或实参使用 at line %d\n", nodeLine(e));
         abort();
     }
 
-    base = opAddr(varNameOf(b->child[0]->lexeme));             /* b 是 Exp:ID */
+    /* ★ 数组形参的运行时值已是基地址（opVar）；局部数组才取 &（opAddr）。 */
+    base = ent->isArrayParam ? opVar(varNameOf(b->child[0]->lexeme))
+                             : opAddr(varNameOf(b->child[0]->lexeme));
 
     /* ── 地址一次线性化：所有变量项先求和（含常数项），最后只加一次 &base ── */
     if (nterms == 0) {
@@ -1092,6 +1127,29 @@ static void collectDims(Node *vd, Dims *d) {
     collectDims(vd->child[0], d);                /* 再到更外层 */
 }
 
+/* 收集 VarDec 的维数并把"名字 -> Type"登记进 varTypes；返回维数（0 = 标量）。
+ * 局部变量（translateVarDec）与形参（translateVarListAsParams）共用这一处
+ * （Task 13 审查 Minor 5 去重）：两处的"标量登记 int / 数组按 dims 构造 Type"
+ * 必须逐字一致，否则同一份声明在两条路径上会得到不同的 Type，下标步长随之不同。
+ * `isArrayParam` 只对数组有意义（标量形参恒记 0，见 varTypes 处说明）。
+ * outDims 非 NULL 时把收集到的 dims 交给调用方（translateVarDec 还要算 DEC 字节数）。 */
+static int registerDeclType(const char *name, Node *vd, int isArrayParam, Dims *outDims) {
+    Dims d;
+    d.n = 0;
+    collectDims(vd, &d);
+    if (d.n == 0)
+        registerVarType(name, typeBasic(BT_INT), 0);
+    else
+        registerVarType(name, typeArrayFromDims(typeBasic(BT_INT), d.dims, d.n),
+                        isArrayParam);
+    if (outDims) {                               /* 只复制已用到的维（别搬未初始化的槽位） */
+        int i;
+        outDims->n = d.n;
+        for (i = 0; i < d.n; i++) outDims->dims[i] = d.dims[i];
+    }
+    return d.n;
+}
+
 /* VarDec 的**声明**部分。
  * 登记名字（`varNameOf`）：登记顺序 = 书写顺序，这正是 IR 里的编号与源码顺序一致的
  * 原因，也是要求书 4.1.6 样例 2 里 `fact` 的形参拿到 v1、main 的 `int m, result;`
@@ -1104,14 +1162,9 @@ static InterCodeList *translateVarDec(InterCodeList *tail, Node *vd) {
     const char *srcName = leafIdName(vd);        /* ★ 类型表按**源码名**索引 */
     const char *irName = varNameOf(srcName);     /* ★ 仍按声明顺序发 v 号（Task 8 约定） */
     Dims d;
-    d.n = 0;
-    collectDims(vd, &d);
-    if (d.n == 0) {                              /* 标量 */
-        registerVarType(srcName, typeBasic(BT_INT), 0);
-    } else {                                     /* 数组：dims 已是最内层在前 */
+    if (registerDeclType(srcName, vd, 0, &d) > 0) {  /* 数组：dims 已是最内层在前 */
         int i, total = 1;
         InterCode *c;
-        registerVarType(srcName, typeArrayFromDims(typeBasic(BT_INT), d.dims, d.n), 0);
         for (i = 0; i < d.n; i++) total *= d.dims[i];
         c = newCode(IR_DEC);
         c->u.dec.x = opVar(irName);
@@ -1248,18 +1301,10 @@ static InterCodeList *translateVarListAsParams(InterCodeList *tail, Node *vl) {
     vd = pd->child[1];
     name = leafIdName(vd);
     /* ★ 形参也要登记类型（Task 13）：body 里的 `x[i]` 要靠它求步长。标量按 int；
-     *   数组形参也照实登记维数，但打上 isArrayParam 标记 —— 本任务（Task 13）不处理
-     *   数组下标，arrayElemAddr 见到该标记会**响亮 abort**，绝不静默按局部数组取 &。
-     *   Task 14 才把"形参本身就是基地址"这条接上。 */
-    {
-        Dims d;
-        d.n = 0;
-        collectDims(vd, &d);
-        if (d.n == 0)
-            registerVarType(name, typeBasic(BT_INT), 0);
-        else
-            registerVarType(name, typeArrayFromDims(typeBasic(BT_INT), d.dims, d.n), 1);
-    }
+     *   数组形参也照实登记维数，并打上 isArrayParam 标记 —— Task 14 起该标记表示
+     *   "形参的运行时值本身就是基地址"：arrayElemAddr 用 opVar 不再取 &，
+     *   translateArgs 把它再作实参传递时也直接 opVar。 */
+    registerDeclType(name, vd, /*isArrayParam=*/1, NULL);
     c = newCode(IR_PARAM);
     c->u.one.x = opVar(varNameOf(name));
     tail = irAppend(tail, c);

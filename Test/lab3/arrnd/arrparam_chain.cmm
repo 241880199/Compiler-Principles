@@ -1,0 +1,20 @@
+int sum(int a[2])
+{
+    return a[0] + a[1];
+}
+
+int pass(int b[2])
+{
+    return sum(b);
+}
+
+int main()
+{
+    int op[2];
+    int r;
+    op[0] = 3;
+    op[1] = 4;
+    r = pass(op);
+    write(r);
+    return 0;
+}

@@ -61,7 +61,9 @@ InterCodeList *translateExtDef(InterCodeList *tail, Node *e);
  *   审查发现它**只写不读** —— 全仓库没有任何一处读它，左值路径自己在
  *   `translateAssignToLValue` 里重算地址。留着一个没人读的出参，等于"文档承诺了
  *   一条并不存在的契约"，故删掉。
- *   高维 / 数组形参落地时（Task 13/14）若要复用它，再加回来。 */
+ *   Task 13（高维）与 Task 14（数组形参）落地后仍未复用：两条路径都**就地分派** ——
+ *   `arrayElemAddr` 按 isArrayParam 选 opAddr/opVar，`translateArgs` 按 varTypes
+ *   的 TY_ARRAY 选 &arr/形参地址，故不需要一个"本结点是地址"的出参。 */
 InterCodeList *translateExp(InterCodeList *tail, Node *e, Operand place);
 
 /* ── 条件翻译（Task 9）────────────────────────────────────────────────────
