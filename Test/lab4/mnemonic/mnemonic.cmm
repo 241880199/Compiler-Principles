@@ -1,0 +1,30 @@
+int add(int a, int b)
+{
+    return a + b;
+}
+
+int sub(int a, int b)
+{
+    return a - b;
+}
+
+int mul(int a, int b)
+{
+    return a * b;
+}
+
+int div(int a, int b)
+{
+    return a / b;
+}
+
+int main()
+{
+    int x;
+    x = read();
+    write(add(x, 1));
+    write(sub(x, 1));
+    write(mul(x, 2));
+    write(div(x, 2));
+    return 0;
+}

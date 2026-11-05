@@ -1,0 +1,12 @@
+int sum6(int a, int b, int c, int d, int e, int f)
+{
+    return a + b + c + d + e + f;
+}
+
+int main()
+{
+    int x;
+    x = read();
+    write(sum6(x, x + 1, x + 2, x + 3, x + 4, x + 5));
+    return 0;
+}

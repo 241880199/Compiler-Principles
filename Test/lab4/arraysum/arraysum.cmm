@@ -1,0 +1,27 @@
+int sum(int a[4])
+{
+    int s;
+    int i;
+    s = 0;
+    i = 0;
+    while (i < 4)
+    {
+        s = s + a[i];
+        i = i + 1;
+    }
+    return s;
+}
+
+int main()
+{
+    int b[4];
+    int i;
+    i = 0;
+    while (i < 4)
+    {
+        b[i] = read();
+        i = i + 1;
+    }
+    write(sum(b));
+    return 0;
+}

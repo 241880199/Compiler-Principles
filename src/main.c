@@ -7,6 +7,7 @@
 #include "ir.h"
 #include "translate.h"
 #include "optimize.h"
+#include "target.h"
 
 extern FILE *yyin;
 extern int   yyparse(void);
@@ -16,9 +17,19 @@ extern Node *root;
 static void usage(const char *prog) {
     fprintf(stderr,
             "usage: %s <input-file> [<output-file>]\n"
-            "       %s [-O0|-O1|-O2|-O3] [-o <output-file>|--output <output-file>]"
+            "       %s [-O0|-O1|-O2|-O3] [--ir|--asm]"
+            " [-o <output-file>|--output <output-file>]"
             " <input-file> [<output-file>]\n",
             prog, prog);
+}
+
+/* 输出模式（实验四新增）：
+ *   --ir  强制中间代码（实验三口径）；--asm 强制 MIPS32（实验四口径）。
+ *   缺省按输出文件后缀：`.ir` → IR，其余（含 `.s`/`.asm`/无输出）→ MIPS。
+ * 这样 `./cc in.cmm out.ir` 保持实验三行为，`./cc in.cmm out.s` 满足实验四判分习惯。 */
+static int hasSuffix(const char *s, const char *suffix) {
+    size_t n = strlen(s), m = strlen(suffix);
+    return n >= m && strcmp(s + n - m, suffix) == 0;
 }
 
 int main(int argc, char **argv) {
@@ -32,6 +43,7 @@ int main(int argc, char **argv) {
     const char *inName = NULL;
     const char *outName = NULL;
     int endOfOptions = 0;
+    int forceIR = 0, forceAsm = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
@@ -39,6 +51,10 @@ int main(int argc, char **argv) {
         if (!endOfOptions && arg[0] == '-') {
             if (strcmp(arg, "--") == 0) {
                 endOfOptions = 1;
+            } else if (strcmp(arg, "--ir") == 0) {
+                forceIR = 1; forceAsm = 0;
+            } else if (strcmp(arg, "--asm") == 0) {
+                forceAsm = 1; forceIR = 0;
             } else if (strcmp(arg, "-o") == 0 || strcmp(arg, "--output") == 0) {
                 if (i + 1 >= argc) {
                     fprintf(stderr, "%s: option '%s' requires an argument\n",
@@ -105,7 +121,15 @@ int main(int argc, char **argv) {
             } else if (semErrs == 0 && !semanticOnly) {
                 InterCodeList *ir = translateProgram(root);
                 optimizeIR(ir);      /* Task 16 起：迭代到不动点；各 pass 见 optimize.c */
-                printIR(out, ir);
+                /* 实验四：默认输出 MIPS；`.ir` 后缀（或 --ir）保留实验三口径。 */
+                {
+                    int emitMips = 1;
+                    if (forceIR) emitMips = 0;
+                    else if (forceAsm) emitMips = 1;
+                    else if (outName && hasSuffix(outName, ".ir")) emitMips = 0;
+                    if (emitMips) generateMIPS(out, ir);
+                    else          printIR(out, ir);
+                }
             }
         }
         /* 错误路径也必须关掉已打开的输出文件（stdout 不关）。 */

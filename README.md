@@ -50,6 +50,45 @@
 
 ---
 
+## 实验三：C-- 中间代码生成
+
+把语义正确的 C-- 程序翻译为三地址中间代码（线形 IR），支持一维/多维数组、数组形参、
+数组整体赋值，并在 IR 上做 O1–O9 固定点优化。输出格式由唯一的 `printIR()` 负责：
+
+```bash
+./cc in.cmm out.ir          # 中间代码（实验三口径）
+./cc in.cmm                 # 中间代码写 stdout
+```
+
+## 实验四：MIPS32 目标代码生成
+
+在实验三的 IR 上增加目标代码生成：`src/target.c` 先按函数预扫描分配栈帧，再逐条指令
+选择 MIPS32 指令。采用指导书 5.2.4 的**朴素寄存器分配**（所有变量驻栈），调用一律
+经栈传参，所有局部访问经 `$fp`，因此递归、嵌套调用、多于 4 个实参都不需要保存
+`$t`/`$a` 寄存器。除法按课程虚拟机的**向下取整**语义实现。
+
+```bash
+./cc in.cmm out.s           # MIPS32 汇编（实验四口径）
+./cc --asm in.cmm out.s     # 强制汇编
+./cc --ir  in.cmm out.anything   # 强制中间代码（实验三回归）
+```
+
+输出模式缺省按后缀：`.ir` → 中间代码，其余（含 `.s`/`.asm`）→ MIPS32。
+
+在 SPIM 上运行：
+
+```bash
+spim -quiet -file out.s < in.txt
+```
+
+自检（需 WSL 内安装 `spim`）：
+
+```bash
+bash scripts/run_lab4.sh    # 编译 → SPIM 执行 → 与 .exp 逐字节比对
+```
+
+---
+
 ## 环境要求与工具版本
 
 需要 **flex、bison、gcc、make** 四件工具。Ubuntu / WSL 下一行装齐：
