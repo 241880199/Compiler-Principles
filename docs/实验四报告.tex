@@ -1,0 +1,185 @@
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.2cm,top=1.8cm,bottom=1.8cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\normalsize,
+  columns=flexible,
+  breaklines=true,
+  frame=single,
+  framesep=3pt,
+  xleftmargin=4pt,
+  aboveskip=5pt,
+  belowskip=5pt,
+  keepspaces=true,
+}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{3pt}
+\linespread{1.12}
+\renewcommand{\arraystretch}{1.15}
+\emergencystretch=1.5em
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+{\large\bfseries 实验四：C{-}{-} 目标代码生成}\\[3pt]
+张苏楠\quad 241880199\quad 241880199@smail.nju.edu.cn
+\end{center}
+
+\textbf{工具版本}：gcc \textbf{11.4.0}、GNU flex \textbf{2.6.4}、GNU bison
+\textbf{3.8.2}、GNU make \textbf{4.3}（Ubuntu 22.04）；目标代码在 SPIM
+\textbf{8.0} 上实测，指令只用 QtSPIM 9.x 同样支持的 MIPS32 子集。
+
+\section*{一、实现的功能，以及如何实现}
+
+{\normalsize
+\setlength{\parindent}{0pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}m{2.7cm}m{13.3cm}@{}}
+\hline
+\textbf{功能} & \textbf{如何实现，以及为什么这样实现} \\
+\hline
+总体流程 & 复用实验一/二/三的前端与 IR；\code{main.c} 在 \code{translateProgram} 与
+\code{optimizeIR} 之后，按输出模式调用新增的 \code{generateMIPS}。\code{target.c}
+只读 \code{InterCodeList}，不修改 IR，也不依赖语法树或符号表。输出模式缺省按后缀：
+\code{.ir} 走实验三的 \code{printIR}，其余（含 \code{.s}）走 MIPS；\code{--ir} /
+\code{--asm} 可强制。\\
+\hline
+栈帧 & 每个函数先预扫描：\code{DEC} 给出数组字节数，其余变量/临时变量各 4 字节，
+形参按 \code{PARAM} 出现顺序记录。随后从 \code{\$fp} 向下统一分配槽位；
+\code{\$fp} 之上是调用者压入的实参，\code{-4(\$fp)} 存旧 \code{\$ra}，
+\code{-8(\$fp)} 存旧 \code{\$fp}。\\
+\hline
+调用约定 & 调用者把\textbf{全部实参压栈}（IR 的 \code{ARG} 已是源码逆序），
+\code{jal} 后由调用者清理；被调用者在 prologue 中把 \code{0(\$fp)、4(\$fp)…}
+拷进形参槽，返回值放 \code{\$v0}。所有局部访问一律经 \code{\$fp}，故调用/递归
+不会改变任何局部变量的偏移。\\
+\hline
+指令选择 & 按指导书表 11 逐条对应：\code{li/move/add/addi/sub/mult+mflo/div+mflo}；
+条件跳转用 \code{beq/bne/bgt/blt/bge/ble}；\code{GOTO} 用 \code{j}；
+\code{CALL} 用 \code{jal}+\code{\$v0}。\code{DEC} 不产生指令，只参与栈帧分配。\\
+\hline
+数组与地址 & \code{x := \&y} 生成 \code{addiu \$t0,\$fp,offset(y)}；
+\code{x := *y} 与 \code{*x := y} 生成 \code{lw/sw 0(reg)}。数组形参在 IR 里是
+\code{OP\_VAR}（值本身就是基地址），代码生成直接 \code{lw}，绝不再取一次地址。\\
+\hline
+读写与除法 & \code{read} 用 \code{syscall 5}；\code{write} 用 \code{syscall 1}
+打印整数、\code{syscall 11} 打印换行，不打印提示串，与实验三虚拟机的输出逐字节一致。
+除法按课程虚拟机的\textbf{向下取整}语义实现（见亮点 3）。\\
+\hline
+\end{tabular}}
+
+\section*{二、如何编译}
+
+\begin{lstlisting}[language=bash]
+# Ubuntu 22.04 / WSL
+sudo apt-get install -y flex bison gcc make spim
+make                          # 生成 ./parser（./cc 内容相同）
+./cc in.cmm out.s             # 生成 MIPS32 汇编
+spim -quiet -file out.s < in.txt
+bash scripts/run_lab4.sh      # 端到端自检（编译 -> SPIM -> 比对 .exp）
+\end{lstlisting}
+
+\code{make} 不依赖 \code{-j}；正常输入不写 stderr，gcc 零警告。评分环境若没有
+\code{spim}，把 \code{out.s} 载入 QtSPIM 运行即可，汇编只用两版都支持的伪指令。
+
+\section*{三、亮点 1：全栈传参与固定栈帧——递归为什么天然正确}
+
+本实现不遵循 MIPS ABI，而是自己定一套对编译器最省心、对递归最安全的约定：
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\code{0(\$fp), 4(\$fp), \dots} & 调用者压入的实参（第 1 个在 \code{0(\$fp)}）\\
+\code{-4(\$fp)} & 旧 \code{\$ra}（本函数内还会调用别人时用）\\
+\code{-8(\$fp)} & 旧 \code{\$fp}\\
+\code{-12(\$fp)} 起 & 本函数全部局部变量、临时变量与 \code{DEC} 数组
+\end{tabular}
+\end{center}
+
+prologue 只做四件事：分配固定帧、保存 \code{\$ra}/\code{\$fp}、设立新 \code{\$fp}、
+把实参拷进形参槽；epilogue 统一一处：
+
+\begin{lstlisting}
+  lw   $ra, -4($fp)
+  move $sp, $fp
+  lw   $fp, -8($sp)
+  jr   $ra
+\end{lstlisting}
+
+关键点是\textbf{所有局部变量都经 \code{\$fp} 访问}，而 \code{\$fp} 在函数体内不变。
+调用者压实参只会移动 \code{\$sp}，不会移动任何局部槽；递归时每一层都有自己的
+\code{\$fp} 和独立帧，返回时 \code{move \$sp,\$fp} 精确恢复调用者的栈顶。
+因此不需要保存 \code{\$t0–\$t9}、不需要在调用点做活跃变量分析，
+\code{fact}、\code{fib} 这类递归函数直接正确；多个 \code{return} 也共享同一个
+epilogue 标号，不会产生多份收尾代码。
+
+\section*{四、亮点 2：源码函数名与汇编符号隔离}
+
+调试中发现一个不显眼但会直接让 SPIM 拒绝装载的问题：C-- 允许函数名 \code{add}，
+而 \code{add} 同时是 MIPS 指令助记符。若直接输出
+
+\begin{lstlisting}
+add:              # SPIM: syntax error ... add:
+\end{lstlisting}
+
+SPIM 会把 \code{add:} 当成指令 \code{add} 后面跟了一个非法操作数。同理还有
+\code{sub}、\code{mul}、\code{div}、\code{lw}、\code{move} 等。本实现除入口
+\code{main} 外，一律把源码函数名映射为 \code{\_\_cmm\_<name>}：该前缀既不可能与
+C-- 标识符前缀冲突（映射后仍唯一），也不可能与 MIPS 助记符相同；所有 \code{jal}
+与函数标签都走同一个映射函数。专用用例 \code{Test/lab4/mnemonic} 同时定义
+\code{add/sub/mul/div} 四个函数并调用，已验证不再触发语法错。
+
+\section*{五、亮点 3：与课程语义对齐的向下取整除法，以及端到端差分测试}
+
+MIPS 的 \code{div} 是\textbf{向零截断}，而课程虚拟机把 \code{/} 定义为
+\textbf{向下取整}：\code{-7/2} 在虚拟机上得 \code{-4}，在 MIPS 上直接 \code{div}
+只得 \code{-3}。本实现在余数非零且两操作数异号时把商减 1：
+
+\begin{lstlisting}
+  div $t0, $t1
+  mflo $t2                 # 向零截断的商
+  mfhi $t3                 # 余数
+  beq $t3, $zero, .Ldiv_N
+  xor $t3, $t0, $t1
+  bgez $t3, .Ldiv_N        # 同号：截断即向下取整
+  addi $t2, $t2, -1        # 异号且有余数：商减 1
+.Ldiv_N:
+\end{lstlisting}
+
+实验三的 \code{divneg.cmm} 覆盖 $(-7)/2$、$7/(-2)$、$(-7)/(-2)$ 三种符号组合，
+本实现的目标代码输出 \code{-4,-4,3}，与实验三 \code{.exp} 完全一致。
+
+测试台 \code{scripts/run\_lab4.sh} 把“同一份 \code{.cmm}”分别送进两个独立执行链：
+先用本编译器生成 \code{.s} 交给 SPIM，再与实验三已经独立产生的 \code{.exp} 逐字节
+比对。运行台处理了两个真实差异：SPIM 8 的版本横幅写在 stdout 开头，需在程序输出前
+剥掉；SPIM 的 \code{read\_int} 一次读一行，而实验三的 \code{.in} 用逗号分隔整数，
+故先 \code{tr ',' '\textbackslash n'} 归一化。当前覆盖实验三全部 24 个真实用例
+（标量、控制流、一维/多维数组、数组形参、递归、负数除法）加 6 个实验四用例
+（递归、6 实参、嵌套调用、多函数、数组求和、助记符同名函数），共
+\textbf{30 个用例全部通过}；实验一/二的 70 个用例与实验三的 24 个 IR 用例也保持全绿。
+
+\section*{六、测试覆盖}
+
+{\normalsize
+\setlength{\parindent}{0pt}
+\begin{tabular}{@{}llc@{}}
+\hline
+\textbf{用例组} & \textbf{覆盖点} & \textbf{结果} \\
+\hline
+实验三 标量/控制流（10） & 算术、赋值链、负数除法、条件、循环、读写 & 10/10 \\
+实验三 一维数组（3） & 数组下标、冒泡排序、数组求和 & 3/3 \\
+实验三 多维/数组形参（7） & 高维下标、数组整体赋值、数组形参转传 & 7/7 \\
+实验三 函数/样例（4） & 实参顺序、递归阶乘、要求书两个样例 & 4/4 \\
+实验四 新增（6） & 递归 Fibonacci、6 实参、嵌套调用、多函数、 & 6/6 \\
+                    & 数组形参求和、与 MIPS 助记符同名的函数 & \\
+\hline
+合计 & 30 个端到端用例（编译 → SPIM → 与 .exp 逐字节比对） & \textbf{30/30} \\
+\hline
+\end{tabular}}
+
+\end{document}
