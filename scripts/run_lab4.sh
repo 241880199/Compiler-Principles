@@ -71,7 +71,10 @@ while IFS= read -r cmm; do
     [ -n "$cmm" ] || continue
     base=${cmm%.cmm}
     in="$base.in"
+    # 实验三的 .exp 是虚拟机语义（除法向下取整）；MIPS 按指导书表 11 是向零截断。
+    # 个别用例用 .mips.exp 覆盖，避免把实验三的期望误当成 lab4 的期望。
     exp="$base.exp"
+    [ -f "$base.mips.exp" ] && exp="$base.mips.exp"
     tag=$(printf '%s' "${base#Test/}" | tr '/' '_')
     s="$OUT/$tag.s"
     raw="$OUT/$tag.raw"

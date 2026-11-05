@@ -69,8 +69,9 @@
 \code{OP\_VAR}（值本身就是基地址），代码生成直接 \code{lw}，绝不再取一次地址。\\
 \hline
 读写与除法 & \code{read} 用 \code{syscall 5}；\code{write} 用 \code{syscall 1}
-打印整数、\code{syscall 11} 打印换行，不打印提示串，与实验三虚拟机的输出逐字节一致。
-除法按课程虚拟机的\textbf{向下取整}语义实现（见亮点 3）。\\
+打印整数、\code{syscall 11} 打印换行，不打印提示串。除法按指导书表 11 的
+\code{div}+\code{mflo} 实现（\textbf{向零截断}，C 语义；实验三虚拟机的
+\code{//} 向下取整只用于 lab3 口径，见亮点 3）。\\
 \hline
 \end{tabular}}
 
@@ -134,34 +135,40 @@ C-- 标识符前缀冲突（映射后仍唯一），也不可能与 MIPS 助记�
 与函数标签都走同一个映射函数。专用用例 \code{Test/lab4/mnemonic} 同时定义
 \code{add/sub/mul/div} 四个函数并调用，已验证不再触发语法错。
 
-\section*{五、亮点 3：与课程语义对齐的向下取整除法，以及端到端差分测试}
+\section*{五、亮点 3：三处语义接缝的实测修正}
 
-MIPS 的 \code{div} 是\textbf{向零截断}，而课程虚拟机把 \code{/} 定义为
-\textbf{向下取整}：\code{-7/2} 在虚拟机上得 \code{-4}，在 MIPS 上直接 \code{div}
-只得 \code{-3}。本实现在余数非零且两操作数异号时把商减 1：
+\textbf{（1）除法：实验三虚拟机与实验四指导书并不一致。} 实验三的 \code{irsim}
+把 \code{/} 实现为 Python 的 \code{//}（向下取整，\code{-7/2} 得 \code{-4}）；
+实验四指导书表 11 写的却是 \code{div reg(y),reg(z); mflo reg(x)}，即 MIPS 的
+\textbf{向零截断}（\code{-7/2} 得 \code{-3}）。lab4 以指导书为准，直接发
+\code{div}+\code{mflo}；实验三的 \code{divneg.cmm} 在 lab4 测试台里用
+\code{divneg.mips.exp} 覆盖期望（\code{-3,-3,3,3,-4,4}），实验三的 IR 回归仍按
+虚拟机语义，两套口径互不影响。
+
+\textbf{（2）条件取值模板的别名问题。} 指导书表 2 的“关系/与/或作为值”模板先写
+\code{place := \#0}，而条件里的变量是\textbf{惰性}读取的。对 \code{a = (a > 2);}
+这类“赋值目标又出现在条件里”的程序，旧实现会先把 \code{a} 清零再比较，结果恒为
+\code{0}。修正为先把 0/1 算进新临时变量 \code{t}，条件读完后再 \code{a := t}：
 
 \begin{lstlisting}
-  div $t0, $t1
-  mflo $t2                 # 向零截断的商
-  mfhi $t3                 # 余数
-  beq $t3, $zero, .Ldiv_N
-  xor $t3, $t0, $t1
-  bgez $t3, .Ldiv_N        # 同号：截断即向下取整
-  addi $t2, $t2, -1        # 异号且有余数：商减 1
-.Ldiv_N:
+t := #0
+IF a <= #2 GOTO L
+t := #1
+L: a := t
 \end{lstlisting}
 
-实验三的 \code{divneg.cmm} 覆盖 $(-7)/2$、$7/(-2)$、$(-7)/(-2)$ 三种符号组合，
-本实现的目标代码输出 \code{-4,-4,3}，与实验三 \code{.exp} 完全一致。
+\code{t} 被定义两次，正好落在优化器允许的“条件取值模板”例外上，O3/O4 不会把它
+内联掉。公开的 67 个符合假设的 C-- 用例回归中，\code{a = (a > 2);} 在 \code{a=3}
+时由错误的 \code{0} 变为正确的 \code{1}。
 
-测试台 \code{scripts/run\_lab4.sh} 把“同一份 \code{.cmm}”分别送进两个独立执行链：
-先用本编译器生成 \code{.s} 交给 SPIM，再与实验三已经独立产生的 \code{.exp} 逐字节
-比对。运行台处理了两个真实差异：SPIM 8 的版本横幅写在 stdout 开头，需在程序输出前
-剥掉；SPIM 的 \code{read\_int} 一次读一行，而实验三的 \code{.in} 用逗号分隔整数，
-故先 \code{tr ',' '\textbackslash n'} 归一化。当前覆盖实验三全部 24 个真实用例
-（标量、控制流、一维/多维数组、数组形参、递归、负数除法）加 6 个实验四用例
-（递归、6 实参、嵌套调用、多函数、数组求和、助记符同名函数），共
-\textbf{30 个用例全部通过}；实验一/二的 70 个用例与实验三的 24 个 IR 用例也保持全绿。
+\textbf{（3）端到端测试台。} \code{scripts/run\_lab4.sh} 把同一份 \code{.cmm}
+送进两个独立执行链：本编译器生成 \code{.s} 交给 SPIM，再与独立产生的 \code{.exp}
+逐字节比对。运行台处理了两个真实差异：SPIM 8 的版本横幅写在 stdout 开头，需在程序
+输出前剥掉；SPIM 的 \code{read\_int} 一次读一行，而实验三的 \code{.in} 用逗号分隔
+整数，故先 \code{tr ',' '\textbackslash n'} 归一化。当前覆盖实验三全部 24 个真实
+用例加 6 个实验四用例（递归、6 实参、嵌套调用、多函数、数组求和、助记符同名函数），
+共 \textbf{30 个用例全部通过}；另用 67 个公开 C-- 用例回归 base 组，亦全部通过。
+实验一/二的 70 个用例与实验三的 24 个 IR 用例保持全绿。
 
 \section*{六、测试覆盖}
 

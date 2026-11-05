@@ -15,7 +15,8 @@
  *   Exp1 op Exp2     -> t1 := Exp1; t2 := Exp2; place := t1 op t2   （op 是 + - * /）
  *   -Exp1            -> t1 := Exp1; place := #0 - t1
  *   (Exp1)           -> translateExp(Exp1, place)      （括号不产生任何 IR）
- *   Exp 关系/与/或   -> translateCondAsValue：`[place := #0]` + 条件翻译 + `place := #1`
+ *   Exp 关系/与/或   -> translateCondAsValue：`[t := #0]` + 条件翻译 + `[t := #1]`
+ *                       + `place := t`（t 是新临时变量，避免清掉条件要读的旧值）
  *   !Exp             -> translateNotAsValue（同上；NOT 的特别之处在 translateCond 的
  *                       目标互换那一行，两条路径共用同一个实现）
  *   条件本体         -> translateCond(tail, e, label_true, label_false)：**短路**，
@@ -689,30 +690,41 @@ static void shapeError(const char *what, Node *n) {
  * place 为 NULL（值不被需要）时那两条 `place := …` 都不产，**但条件代码照常生成**：
  * 跳转是这段表达式的全部语义，且两侧可能含函数调用这类副作用。
  *
- * ★ **`place` 与条件里读到的操作数同名时的交互**（详见 spec §11 P8）：本函数在条件
- * **之前**先产 `place := #0`，而条件里的 `EX_ID` 操作数是在 `translateCond` 里**惰性**
- * 就地读的（不像算术两侧那样先求值进临时变量）。于是当 place 本身又作为条件操作数出现
- * 时（`x = !x;`、`x = x > 0;`、`x = x && y;` 这类"赋值目标变量也在条件里被读"），
- * 生成的顺序是**先把自己清成 0、随后才去读它** —— 读到的是刚清掉的那个 0，而不是
- * 读之前的旧值。这与 C 的求值语义**不同**（C 里 `x = !x` 读的是旧值）。
- * 但它**逐字符合指导书表 2 的模板**：表 2 里 RELOP/NOT/AND/OR 那一行就是
- * `code0 = [place := #0]` 排在最前，本文件与设计文档 §6.2 都照抄了它；课程那份参考
- * 实现若按同一模板写，会有**完全相同**的行为。
- * ⇒ **这是刻意跟随指导书模板的行为，不是本实现的独立选择。改动前必须先确认判分口径**
- *   —— 判分按"中间代码在虚拟机上运行的结果"给，单方面改成 C 语义（先算进临时变量、
- *   或做别名门控）**可能反而与判分机期望的输出不一致**，故本任务只记录、不改行为。
- * 当前行为由 Test/unit/test_cond.c 的 `x = !x;` 用例逐字节钉住：日后若有人"顺手修成
- * C 语义"，那条用例会**当场变红**，而不是让行为悄悄改变。 */
+ * ★ **`place` 与条件里读到的操作数同名**（`x = !x;`、`x = x > 0;`、`x = x && y;`）：
+ * 条件里的 `EX_ID` 操作数是在 `translateCond` 里**惰性**就地读的。若照指导书表 2
+ * 的模板把 `place := #0` 排在最前，会先清掉条件要读的旧值，得到 C 语义之外的结果
+ * （NJU 样例 `handmade/yzy19.cmm` 的 `a = (a > 2);` 就是这么失败的）。
+ * 故这里**先把 0/1 算进一个新临时变量**，条件读完后再 `place := 临时变量`；
+ * 临时变量被定义两次，正好属于优化器允许的"条件取值模板"例外，O3/O4 不会内联它。
+ * `Test/unit/test_cond.c` 的 `x = !x;` 用例逐字节钉住这个 C 语义。 */
 static InterCodeList *translateCondAsValue(InterCodeList *tail, Node *e, Operand place) {
     char *lt = newLabelName(), *lf = newLabelName();
+    Operand dst = place;
     InterCode *c;
-    if (place) { c = newCode(IR_ASSIGN); c->u.assign.x = place; c->u.assign.y = opConst(0);
-                 tail = irAppend(tail, c); }
+    /* ★ 条件先算进一个**新临时变量**，最后再拷回 place。理由：条件里的 `EX_ID`
+     * 操作数是在 translateCond 里惰性读的；若 place 本身又出现在条件里
+     * （`x = x > 0;`、`x = !x;`），直接 `place := #0` 会先把条件要读的旧值
+     * 清掉，得到 C 语义之外的结果。指导书表 2 的模板确实把 `place := #0`
+     * 排在最前，但判分按程序运行结果给分，C 语义（读旧值）才是期望。
+     * 该临时变量被定义两次（0/1），正好落在优化器允许的"条件取值模板"例外上，
+     * O3/O4 不会把它内联掉。 */
+    if (place) {
+        dst = opVar(newTempName());
+        c = newCode(IR_ASSIGN); c->u.assign.x = dst; c->u.assign.y = opConst(0);
+        tail = irAppend(tail, c);
+    }
     tail = translateCond(tail, e, lt, lf);
     tail = appendLabel(tail, lt);
-    if (place) { c = newCode(IR_ASSIGN); c->u.assign.x = place; c->u.assign.y = opConst(1);
-                 tail = irAppend(tail, c); }
-    return appendLabel(tail, lf);
+    if (place) {
+        c = newCode(IR_ASSIGN); c->u.assign.x = dst; c->u.assign.y = opConst(1);
+        tail = irAppend(tail, c);
+    }
+    tail = appendLabel(tail, lf);
+    if (place) {
+        c = newCode(IR_ASSIGN); c->u.assign.x = place; c->u.assign.y = dst;
+        tail = irAppend(tail, c);
+    }
+    return tail;
 }
 
 /* 逻辑非**作为值**：与上面逐字同形 —— `!Exp` 的全部特别之处都收在

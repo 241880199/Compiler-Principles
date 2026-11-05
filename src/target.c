@@ -25,8 +25,9 @@
  *        -8($fp)   旧 $fp
  *        -12($fp)  起：局部变量 / 临时变量 / DEC 数组（向低地址增长）
  *
- *  4. 除法按**课程虚拟机语义**（向下取整）实现，与实验三的 .exp 一致；
- *     MIPS 的 div 是向零截断，故在余数非零且两操作数异号时把商减 1。
+ *  4. 除法按**指导书表 11** 的 `div` + `mflo` 实现（向零截断，C 语义）。
+ *     实验三的虚拟机用 Python `//`（向下取整），两者只在负数上有差别；
+ *     lab4 的判分以指导书为准，故不做向下取整修正。
  *
  *  本文件只读 InterCodeList，不修改 IR，也不直接依赖前端任何数据结构。
  * ============================================================================ */
@@ -222,19 +223,11 @@ static void storeOperand(FILE *out, FuncInfo *fi, Operand o, const char *reg) {
 
 /* ── 指令选择 ────────────────────────────────────────────────────────────── */
 
-static int divLabelSeq;
-
 static void emitDiv(FILE *out) {
-    int id = ++divLabelSeq;
-    /* $t0 = 被除数，$t1 = 除数；结果放 $t2（向下取整）。 */
-    fprintf(out, "  div $t0, $t1\n");
-    fprintf(out, "  mflo $t2\n");
-    fprintf(out, "  mfhi $t3\n");
-    fprintf(out, "  beq $t3, $zero, .Ldiv_%d\n", id);
-    fprintf(out, "  xor $t3, $t0, $t1\n");
-    fprintf(out, "  bgez $t3, .Ldiv_%d\n", id);
-    fprintf(out, "  addi $t2, $t2, -1\n");
-    fprintf(out, ".Ldiv_%d:\n", id);
+    /* $t0 = 被除数，$t1 = 除数；结果放 $t2。
+     * 与指导书表 11 一致：MIPS 的 div 向零截断，这正是 C-- 的 `/` 语义
+     * （与实验三虚拟机的 `//` 向下取整不同；lab4 以指导书为准）。 */
+    fputs("  div $t0, $t1\n  mflo $t2\n", out);
 }
 
 static void emitCode(FILE *out, FuncInfo *fi, InterCode *c, int *pendingArgs) {
