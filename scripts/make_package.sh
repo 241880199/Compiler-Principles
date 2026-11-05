@@ -23,8 +23,10 @@ REPO=$PWD
 # 注意本仓库的物理位置有点绕：它在 `作业一/Compiler-Principles`，而实验三的交付物属于
 # **兄弟**目录 `作业三/` —— 所以是 `../../作业三/`，不是 `../`（写错过一次：包落进了
 # 作业一/，与实验一的包混在一起，而脚本照旧打印成功）。
-OUT=$(realpath -m "${1:-$REPO/../../作业三/proj3_submission.zip}")
-REPORT_PDF=docs/实验三报告.pdf
+# 实验四复用本脚本：OUT / REPORT_PDF / LABEL 均可用环境变量覆盖。
+OUT=$(realpath -m "${OUT:-${1:-$REPO/../../作业三/proj3_submission.zip}}")
+REPORT_PDF=${REPORT_PDF:-docs/实验三报告.pdf}
+LABEL=${LABEL:-实验三}
 
 # 交付包一律**不落在仓库里**（公开仓库 + *.zip 未被 .gitignore 覆盖）。上面那个
 # `../` 写成 `../../作业三/` 的错就是**静默**的：包打错地方，脚本照旧打印成功。
@@ -111,8 +113,8 @@ fi
 CUT=$(grep -n "^# $SENTINEL >>>" "$WORK/head-Makefile" | head -1 | cut -d: -f1)
 
 {
-    cat <<'HDR'
-# 实验三交付包 Makefile —— **由 scripts/make_package.sh 机械派生，请勿手改**。
+    cat <<HDR
+# ${LABEL}交付包 Makefile —— **由 scripts/make_package.sh 机械派生，请勿手改**。
 #
 # 派生自仓库 Makefile 的核心构建段（到 PKG-CUT 哨兵为止）中的非注释行，并去掉
 # `src/` 前缀 —— 本包内源码平铺于 Code/ 下。改构建规则请改仓库 Makefile 再重新打包。
